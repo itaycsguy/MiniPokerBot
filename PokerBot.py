@@ -7,6 +7,7 @@ import json
 import copy
 import time
 import pickle
+from collections import Counter
 import matplotlib.pyplot as plt
 
 class logger:
@@ -404,7 +405,15 @@ class States():
     COLOR_INTERVAL = 2
     BLIND_INTERVAL = 2
     CARDS_RANGE = 13
-    POOR_PERCENTILE = 0.10
+    POOR_PERCENTILE = 0.05
+    ORD = 0
+    ONE_HIGH = 1
+    TWO_HIGHS = 2
+    PAIR = 3
+    HIGH_PAIR = 4
+    COLOR = 5
+    HIGH_COLOR = 6
+    HIGH_CARD = 8
 
 
     def getLinearIndex(self,indices):
@@ -423,8 +432,9 @@ class States():
             self._initNextStates()
         else:
             print("Reading Q-Table..")
-            table = np.load('C:\\Users\\itgu1\\source\\repos\\PokerBot\\PokerBot\\Qtable_' + str(agentId) + '.npy')
-            with open("C:\\Users\\itgu1\\source\\repos\\PokerBot\\PokerBot\\stateSeeds_" + str(agentId) + ".npy","rb") as f:
+            path = str(os.path.dirname(str(os.path.abspath(__file__))))
+            table = np.load(path + "\\Qtable_" + str(agentId) + ".npy")
+            with open(path + "\\stateSeeds_" + str(agentId) + ".npy","rb") as f:
                 seeds = pickle.load(f)
             for key in seeds.keys():
                 totalPercentile += (table[0][key] + table[1][key]) / 2.0
@@ -437,11 +447,17 @@ class States():
         self._qtable,self._stateSeeds,self.totalPercentile = self._init_qtable(enableLearning,agentId)
         self._state = list()
         self._stateIndex = -1
-        self._alpha =    0.1
-        self._gamma =    1.0
-        self._epsilon =  0.01
+        self._alpha = 0.1
+        self._gamma = 1.0
+        self._epsilon = 0.01
         self._finalState = ""
-        self._R = {States.WIN : 10.0,States.LOSE : -2.0}
+        self._R_simple = {States.WIN : 1.0,States.LOSE : -1.0}
+        self._R_high = {States.WIN : 2.0,States.LOSE : -1.0}
+        self._R_twoHighs = {States.WIN : 3.0,States.LOSE : -1.0}
+        self._R_pair = {States.WIN : 6.0,States.LOSE : -2.0}
+        self._R_color = {States.WIN : 6.0,States.LOSE : -2.0}
+        self._R_highPair = {States.WIN : 12.0,States.LOSE : -3.0}
+        self._R_highColor = {States.WIN : 12.0,States.LOSE : -3.0}
         self._penalties = list()
         #currState = np.unravel_index(i,(States.CARDS_RANGE,States.CARDS_RANGE,States.COLOR_INTERVAL,States.POT_INTERVAL,States.BLIND_INTERVAL))
 
@@ -488,12 +504,116 @@ class States():
     def setFinalState(self,final):
         self._finalState = final
 
+    def _isOneHigh(self,state):
+        return True if state[0] > States.HIGH_CARD or state[1] > States.HIGH_CARD else False
+
+    def _isTwoHigh(self,state):
+        return True if state[0] > States.HIGH_CARD and state[1] > States.HIGH_CARD else False
+
+    def _isPair(self,state):
+        return True if state[0] == state[1] else False
+
+    def _isHighPair(self,state):
+        return True if self._isPair(state) and self._isOneHigh(state) else False
+
+    def _isColor(self,state):
+        return True if state[2] else False
+
+    def _isHighColor(self,state):
+        return True if self._isColor(state) and self._isTwoHigh(state) else False
+
+    def getCurrCardsStatus(self):
+        state = np.unravel_index(self._stateIndex,(States.CARDS_RANGE,States.CARDS_RANGE,States.COLOR_INTERVAL,States.POT_INTERVAL,States.BLIND_INTERVAL))
+        if self._isOneHigh(state):
+            return States.ONE_HIGH
+        elif self._isTwoHigh(state):
+            return States.TWO_HIGHS
+        elif self._isPair(state):
+            return States.PAIR
+        elif self._isHighPair(state):
+            return States.HIGH_PAIR
+        elif self._isColor(state):
+            return States.COLOR
+        elif self._isHighColor(state):
+            return States.HIGH_COLOR
+        else:
+            return States.ORD
+
     def setStateReward(self,action):
-        if self._finalState == States.LOSE:
-            self._penalties.append(self._R[self._finalState])
-        self._qtable[action][self._stateIndex] =    (1.0 - self._alpha) * self._qtable[action][self._stateIndex] + \
-                                                    self._alpha * (self._R[self._finalState] + self._gamma * self._getNextStateExpectedValue(self._state) - \
-                                                    self._qtable[action][self._stateIndex])
+        cardsStatus = self.getCurrCardsStatus()
+        
+        ##initialize
+        if self.getFinalState() == States.WIN:
+            R = self._R_simple[States.WIN]
+        else:
+            R = self._R_simple[States.LOSE]
+
+        ##cases for better diversity between different states by action and its result
+        if cardsStatus == States.ONE_HIGH:
+            if self._finalState == States.LOSE and action == Poker.ALLIN:
+                self._penalties.append(self._R_high[States.LOSE])
+                R = self._R_high[States.LOSE]
+            elif self._finalState == States.LOSE:
+                R = self._R_simple[States.WIN]
+            elif action == Poker.ALLIN:
+                R = self._R_high[States.WIN]
+
+
+        elif cardsStatus == States.TWO_HIGHS:
+            if self._finalState == States.LOSE and action == Poker.ALLIN:
+                self._penalties.append(self._R_twoHighs[States.LOSE])
+                R = self._R_twoHighs[States.LOSE]
+            elif self._finalState == States.LOSE:
+                R = self._R_simple[States.WIN]
+            elif action == Poker.ALLIN:
+                R = self._R_twoHighs[States.WIN]
+
+        elif cardsStatus == States.PAIR:
+            if self._finalState == States.LOSE and action == Poker.ALLIN:
+                self._penalties.append(self._R_pair[States.LOSE])
+                R = self._R_pair[States.LOSE]
+            elif self._finalState == States.LOSE:
+                R = self._R_simple[States.WIN]
+            elif action == Poker.ALLIN:
+                R = self._R_pair[States.WIN]
+
+        elif cardsStatus == States.HIGH_PAIR:
+            if self._finalState == States.LOSE and action == Poker.ALLIN:
+                self._penalties.append(self._R_highPair[States.LOSE])
+                R = self._R_highPair[States.LOSE]
+            elif self._finalState == States.LOSE:
+                R = self._R_simple[States.WIN]
+            elif action == Poker.ALLIN:
+                R = self._R_highPair[States.WIN]
+
+        elif cardsStatus == States.COLOR:
+            if self._finalState == States.LOSE and action == Poker.ALLIN:
+                self._penalties.append(self._R_color[States.LOSE])
+                R = self._R_color[States.LOSE]
+            elif self._finalState == States.LOSE:
+                R = self._R_simple[States.WIN]
+            elif action == Poker.ALLIN:
+                R = self._R_color[States.WIN]
+
+        elif cardsStatus == States.HIGH_COLOR:
+            if self._finalState == States.LOSE and action == Poker.ALLIN:
+                self._penalties.append(self._R_highColor[States.LOSE])
+                R = self._R_highColor[States.LOSE]
+            elif self._finalState == States.LOSE:
+                R = self._R_simple[States.WIN]
+            elif action == Poker.ALLIN:
+                R = self._R_highColor[States.WIN]
+
+        elif cardsStatus == States.ORD:
+            if self._finalState == States.LOSE and action == Poker.ALLIN:
+                self._penalties.append(self._R_simple[States.LOSE])
+                R = self._R_simple[States.LOSE]
+            elif self._finalState == States.LOSE or action == Poker.ALLIN:
+                R = self._R_simple[States.WIN]
+
+        self._qtable[action][self._stateIndex] = (1.0 - self._alpha) * self._qtable[action][self._stateIndex] + \
+                                                 self._alpha * (R + self._gamma * self._getNextStateExpectedValue(self._state) - \
+                                                 self._qtable[action][self._stateIndex])
 
 
     ##private methods
@@ -567,6 +687,12 @@ class Agent:
     def updateIfBluff(self,state):
         pass
 
+    def updateGameStatus(self,rounds):
+        pass
+
+    def updateGameCurrWins(self):
+        pass
+
     def getAccumulatedSeq(self):
         return None
 
@@ -631,16 +757,12 @@ class QAgent(Agent):
         self._agentId = id
         self.bluffs = 0
         self.currWins = 0
-        self.currentRounds = 0
-        self.currAvgWinsPerRound = 1.0
+        self.gameWins = 0
+        self.roundWins = list()
+        self.rounds = list()
         self.accumulatedSeq = list()
-        self.rc = None
 
     ##set methods
-    ## the curve should analyze hands [success - train & test (TP) <-> success - train but failed at the test (FP)]
-    def buildRocCurve(self,y,scores,pos_labels=2):
-        self.rc = metrics.roc_curve(y, scores, pos_label)
-
     def evalAct(self,state):
         self._states.setCurrentState(state)
         stateIdx = self._states.getLinearIndex(state)
@@ -679,7 +801,7 @@ class QAgent(Agent):
 
     #TODO: need to approximate it state0 is less than state1 and who winner is 
     def updateIfBluff(self,state):
-        if self.action == 0:
+        if self._states.getFinalState() == States.WIN and self.action == Poker.ALLIN:
             idx = self._states.getLinearIndex(state)
             qtable = self._states.getQTable()
             stateRank = (qtable[0][idx] + qtable[1][idx]) / 2.0
@@ -687,21 +809,24 @@ class QAgent(Agent):
                 self.bluffs += 1
 
 
+    def updateGameCurrWins(self):
+        self.gameWins += 1
+
     ##get methods
-    def getAvgWinsRate(self):
-        freq = list()
-        prevWin = 0
-        counter = 0
-        for win in self.accumulatedSeq:
-          if prevWin != win:
-              prevWin = win
-              freq.append(counter)
-          else:
-              counter += 1
-        return int(sum(freq)/len(self.accumulatedSeq))
+    def getGameCurrWins(self):
+        return self.gameWins
 
+    def updateGameStatus(self,rounds):
+        self.roundWins.append(self.gameWins)
+        self.gameWins = 0
+        self.rounds.append(rounds)
 
-
+    def getAvgWinsPerGame(self):
+        i = 1
+        mean = 1.0
+        for win,rounds in zip(self.roundWins,self.rounds):
+            mean += (i * (win/rounds))
+        return mean
 
     def getAccumulatedSeq(self):
         return self.accumulatedSeq
@@ -740,6 +865,7 @@ class QAgent(Agent):
         agentId = self.getAgentId()
         self._states.saveData(agentId)
         logger.log(logger.WARNING,agentClass + " #{} saved all data.".format(str(agentId)))
+
 
 def getInput(output,options = None,default = None):
     while (True):
@@ -786,7 +912,8 @@ def main(enableLearning):
 
     win_count1 = 0
     win_count2 = 0
-    epochs = 1000
+    epochs = 500
+    totalRoundCount = 0
 
     game = Poker()
     agents = [chooseAgent(game,epochs,enableLearning,1,0),chooseAgent(game,epochs,enableLearning,2,1)]
@@ -815,11 +942,20 @@ def main(enableLearning):
             if winners:
                 if winners[0] == agents[0].getId():
                     agents[0].setStatus(States.WIN)
+                    agents[0].updateGameCurrWins()
+                    agents[0].setWin(1)
+                    agents[1].setWin(0)
                     agents[1].setStatus(States.LOSE)
+                    agents[0].updateGameStatus(round_count)
                 elif winners[0] == agents[1].getId():
                     agents[1].setStatus(States.WIN)
+                    agents[1].updateGameCurrWins()
+                    agents[1].setWin(1)
+                    agents[0].setWin(0)
                     agents[0].setStatus(States.LOSE)
+                    agents[1].updateGameStatus(round_count)
 
+            if enableLearning:
                 if agents[0].getStatus() == States.WIN:
                     actionValue = agents[0].getActionValue()
                     logger.log(logger.WARNING,agents[0].getAgentClass() + "#{} wins: v({}) = {}".format(0,agents[0].action2String(agents[0].getAction()),actionValue))
@@ -828,7 +964,8 @@ def main(enableLearning):
                     logger.log(logger.WARNING,agents[0].getAgentClass() + "#{} wins: v({}) = {}".format(1,agents[1].action2String(agents[1].getAction()),actionValue))
                 else:
                     logger.log(logger.WARNING,agents[playerIdTurn].getAgentClass() + "#{} wins".format(playerIdTurn))
-
+            else:
+                logger.log(logger.WARNING,agents[playerIdTurn].getAgentClass() + "#{} wins".format(playerIdTurn))
             if enableLearning and (game.isRoundFinished() or game.isGameover()):
                 for idx,agent in enumerate(agents):
                     agent.updateIfBluff(game.getPlayerState(idx))
@@ -843,33 +980,29 @@ def main(enableLearning):
 
             if game.isRoundFinished():
                 round_count += 1
+                totalRoundCount += 1
                 print("----------- round #{} -----------".format(round_count))
 
-
+        
+        
         game.printStatus()
-        winners = game.getWinnerIDs()
-        if winners[0] == agents[0].getId():
-            agents[0].setWin(1)
-        elif winners[0] == agents[1].getId():
-            agents[1].setWin(1)
         if i < epochs-1:
-            logger.log(logger.WARNING,agents[0].getAgentClass() + "(id:0) current wins:",(agents[0].getWins() / agents[0].getEpochs()) * 100.0,"%")
-            logger.log(logger.WARNING,agents[1].getAgentClass() + "(id:1) current wins:",(agents[1].getWins() / agents[1].getEpochs()) * 100.0,"%")
+            logger.log(logger.WARNING,agents[0].getAgentClass() + "(id:{}) current wins:".format(idx),(agents[0].getWins() / agents[0].getEpochs()) * 100.0,"%")
     
 
     if enableLearning:
         logger.log(logger.WARNING,"model learning Is finished.")
         for idx,agent in enumerate(agents):
             if type(agent) == QAgent:
-                logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) average penalties:".format(idx),agent.getStatesObj().getSumPenalties() / agent.getEpochs() * 100.0,"%")
+                logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) average penalties:".format(idx),(agent.getStatesObj().getSumPenalties() / totalRoundCount) * 100.0,"%")
             logger.log(logger.WARNING,agent.getAgentClass() + "(id:0) total wins:",(agent.getWins() / agent.getEpochs()) * 100.0,"%")
             agent.save()
             accumulatedSeq = agent.getAccumulatedSeq()
             if accumulatedSeq:
                 ##wins normalization
                 for idx,_ in enumerate(accumulatedSeq):
-                    accumulatedSeq[idx] = accumulatedSeq[idx]/len(accumulatedSeq)
-                plt.plot(range(len(accumulatedSeq)),accumulatedSeq,'go',linewidth=2,markersize=5)
+                    accumulatedSeq[idx] = accumulatedSeq[idx]
+                plt.plot(range(len(accumulatedSeq)),accumulatedSeq,'go',linewidth=2,markersize=2)
                 plt.xlim((1,len(accumulatedSeq)))
                 plt.xlabel('Trails')
                 plt.ylabel('Wins')
@@ -879,10 +1012,10 @@ def main(enableLearning):
                 plt.show()
     else:
         for idx,agent in enumerate(agents):
-            logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) average bluffs:".format(idx),agent.getBluffs() / agent.getEpochs() * 100.0,"%")
+            logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) average bluffs:".format(idx),(agent.getBluffs() / totalRoundCount) * 100.0,"%")
             logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) total wins:".format(idx),(agent.getWins() / agent.getEpochs()) * 100.0,"%")
             if type(agent) == QAgent:
-                logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) wins rate:".format(idx),agent.getAvgWinsRate())        
+                logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) mean wins:".format(idx),agent.getAvgWinsPerGame())
         logger.log(logger.WARNING,"mini poker game is over.")
 
 if __name__ == '__main__':

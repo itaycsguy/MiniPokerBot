@@ -71,12 +71,24 @@ class Card:
     return (self.rank >= other.rank)
 
 class Dealer:
-    def __init__ (self):
+    def __init__(self):
         self.deck = []
         for suit in Card.SUITS:
             for rank in Card.RANKS:
                 card = Card (rank, suit)
                 self.deck.append(card)
+
+    def removeCards(self,cards):
+        idx2remove = 0
+        for idx,card in enumerate(self.deck):
+            if card.rank == cards[0].rank and card.suit == cards[0].suit:
+                idx2remove = idx
+        del self.deck[idx2remove]
+        for idx,card in enumerate(self.deck):
+            if card.rank == cards[1].rank and card.suit == cards[1].suit:
+                idx2remove = idx
+        del self.deck[idx2remove]
+
 
     def shuffle (self):
         random.shuffle (self.deck)
@@ -158,7 +170,9 @@ class Poker:
         r1,r2 = random.sample(Card.SUITS,2)
         if state0[2] == 1:
             r2 = r1
-        self.players[playerId].deal([Card(state0[0]+2,r1),Card(state0[1]+2, r2)])
+        cards = [Card(state0[0]+2,r1),Card(state0[1]+2, r2)]
+        self.players[playerId].deal(cards)
+        return cards
 
 
     #TODO: need to implement deal to QAgent using it's QTable where is saved for this usage
@@ -177,16 +191,14 @@ class Poker:
             self.players[self.sb].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
             self.players[self.bb].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
         else:                
-                if states0:
-                    self.sampleSubspace(states0,0)
-                if states1:
-                    self.sampleSubspace(states1,1)
-                else:
-                    cards = self.dealer.deal(2)
-                    while self.players[0].cards[0].isEqual(cards) or self.players[0].cards[1].isEqual(cards):
-                        self.dealer.shuffle()
-                        cards = self.dealer.deal(2)
-                    self.players[1].deal(sorted(cards, key=operator.attrgetter('rank')))
+            if states0:
+                cards = self.sampleSubspace(states0,0)
+                self.dealer.removeCards(cards)
+            if states1:
+                self.sampleSubspace(states1,1)
+            else:
+                cards = self.dealer.deal(2)
+                self.players[1].deal(sorted(cards, key=operator.attrgetter('rank')))
 
 
     def setAction(self,action):
@@ -411,8 +423,6 @@ class States():
     TWO_HIGHS = 2
     PAIR = 3
     HIGH_PAIR = 4
-    COLOR = 5
-    HIGH_COLOR = 6
     HIGH_CARD = 8
 
 
@@ -516,12 +526,6 @@ class States():
     def _isHighPair(self,state):
         return True if self._isPair(state) and self._isOneHigh(state) else False
 
-    def _isColor(self,state):
-        return True if state[2] else False
-
-    def _isHighColor(self,state):
-        return True if self._isColor(state) and self._isTwoHigh(state) else False
-
     def getCurrCardsStatus(self):
         state = np.unravel_index(self._stateIndex,(States.CARDS_RANGE,States.CARDS_RANGE,States.COLOR_INTERVAL,States.POT_INTERVAL,States.BLIND_INTERVAL))
         if self._isOneHigh(state):
@@ -532,14 +536,10 @@ class States():
             return States.PAIR
         elif self._isHighPair(state):
             return States.HIGH_PAIR
-        elif self._isColor(state):
-            return States.COLOR
-        elif self._isHighColor(state):
-            return States.HIGH_COLOR
         else:
             return States.ORD
 
-    def setStateReward(self,action):
+    def setStateReward(self,action,weight):
         cardsStatus = self.getCurrCardsStatus()
         
         ##initialize
@@ -586,24 +586,6 @@ class States():
             elif action == Poker.ALLIN:
                 R = self._R_highPair[States.WIN]
 
-        elif cardsStatus == States.COLOR:
-            if self._finalState == States.LOSE and action == Poker.ALLIN:
-                self._penalties.append(self._R_color[States.LOSE])
-                R = self._R_color[States.LOSE]
-            elif self._finalState == States.LOSE:
-                R = self._R_simple[States.WIN]
-            elif action == Poker.ALLIN:
-                R = self._R_color[States.WIN]
-
-        elif cardsStatus == States.HIGH_COLOR:
-            if self._finalState == States.LOSE and action == Poker.ALLIN:
-                self._penalties.append(self._R_highColor[States.LOSE])
-                R = self._R_highColor[States.LOSE]
-            elif self._finalState == States.LOSE:
-                R = self._R_simple[States.WIN]
-            elif action == Poker.ALLIN:
-                R = self._R_highColor[States.WIN]
-
         elif cardsStatus == States.ORD:
             if self._finalState == States.LOSE and action == Poker.ALLIN:
                 self._penalties.append(self._R_simple[States.LOSE])
@@ -611,10 +593,11 @@ class States():
             elif self._finalState == States.LOSE or action == Poker.ALLIN:
                 R = self._R_simple[States.WIN]
 
+        print("qvalue =",self._qtable[action][self._stateIndex])
         self._qtable[action][self._stateIndex] = (1.0 - self._alpha) * self._qtable[action][self._stateIndex] + \
-                                                 self._alpha * (R + self._gamma * self._getNextStateExpectedValue(self._state) - \
+                                                 self._alpha * (R*weight + self._gamma * self._getNextStateExpectedValue(self._state) - \
                                                  self._qtable[action][self._stateIndex])
-
+        print("new qvalue =",self._qtable[action][self._stateIndex])
 
     ##private methods
     def _initNextStates(self):
@@ -669,7 +652,7 @@ class Agent:
     def evalAct(self):
         pass
 
-    def setReward(self):
+    def setReward(self,weight):
         pass
 
     def accumulateGraph(self):
@@ -789,11 +772,11 @@ class QAgent(Agent):
     def collect(self,state):
         self._states.appendOnce(state)
 
-    def setReward(self):
+    def setReward(self,weight):
         if not self.waitingForReward:
             return
         self.waitingForReward = False
-        self._states.setStateReward(self.action)
+        self._states.setStateReward(self.action,weight)
 
     def discount(self,epochs):
         self._states.decreaseGamma(epochs)
@@ -821,6 +804,7 @@ class QAgent(Agent):
         self.gameWins = 0
         self.rounds.append(rounds)
 
+    ##TODO: sum of probs is not going to 1
     def getAvgWinsPerGame(self):
         i = 1
         mean = 1.0
@@ -912,7 +896,7 @@ def main(enableLearning):
 
     win_count1 = 0
     win_count2 = 0
-    epochs = 500
+    epochs = getInput("Epochs ",None,200)
     totalRoundCount = 0
 
     game = Poker()
@@ -955,21 +939,32 @@ def main(enableLearning):
                     agents[0].setStatus(States.LOSE)
                     agents[1].updateGameStatus(round_count)
 
-            if enableLearning:
-                if agents[0].getStatus() == States.WIN:
-                    actionValue = agents[0].getActionValue()
-                    logger.log(logger.WARNING,agents[0].getAgentClass() + "#{} wins: v({}) = {}".format(0,agents[0].action2String(agents[0].getAction()),actionValue))
-                elif agents[1].getAgentClass() == QAgent and agents[1].getStatus() == "win":
-                    actionValue = agents[1].getActionValue()
-                    logger.log(logger.WARNING,agents[0].getAgentClass() + "#{} wins: v({}) = {}".format(1,agents[1].action2String(agents[1].getAction()),actionValue))
+                if enableLearning:
+                    if agents[0].getStatus() == States.WIN:
+                        actionValue = agents[0].getActionValue()
+                        logger.log(logger.WARNING,agents[0].getAgentClass() + "#{} wins: v({}) = {}".format(0,agents[0].action2String(agents[0].getAction()),actionValue))
+                    elif agents[1].getAgentClass() == QAgent and agents[1].getStatus() == States.WIN:
+                        actionValue = agents[1].getActionValue()
+                        logger.log(logger.WARNING,agents[0].getAgentClass() + "#{} wins: v({}) = {}".format(1,agents[1].action2String(agents[1].getAction()),actionValue))
+                    else:
+                        logger.log(logger.WARNING,agents[1].getAgentClass() + "#{} wins".format(1))
                 else:
                     logger.log(logger.WARNING,agents[playerIdTurn].getAgentClass() + "#{} wins".format(playerIdTurn))
-            else:
-                logger.log(logger.WARNING,agents[playerIdTurn].getAgentClass() + "#{} wins".format(playerIdTurn))
+
+
             if enableLearning and (game.isRoundFinished() or game.isGameover()):
                 for idx,agent in enumerate(agents):
                     agent.updateIfBluff(game.getPlayerState(idx))
-                    agent.setReward()
+                    weight = -20
+                    if game.isGameover():
+                        if agent.getStatus() == States.WIN:
+                            weight = 100
+                    else:
+                        weight = -2
+                        if agent.getStatus() == States.WIN:
+                            weight = 10
+
+                    agent.setReward(weight)
                     agent.discount(epochs)
                     agent.accumulateGraph()
             elif not enableLearning and (game.isRoundFinished() or game.isGameover()):
@@ -988,6 +983,7 @@ def main(enableLearning):
         game.printStatus()
         if i < epochs-1:
             logger.log(logger.WARNING,agents[0].getAgentClass() + "(id:{}) current wins:".format(idx),(agents[0].getWins() / agents[0].getEpochs()) * 100.0,"%")
+    
     
 
     if enableLearning:

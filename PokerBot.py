@@ -1,4 +1,5 @@
-##version 0.5
+##version 0.6
+##developers: Itay Guy & Din Sharaby
 import random,math,os,sys
 import numpy as np
 import itertools
@@ -20,7 +21,6 @@ class logger:
     def log(level,*args):
         if (level >= 0):
             print (*args)
-
 
 class Card:
   RANKS = (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
@@ -78,6 +78,7 @@ class Dealer:
                 card = Card (rank, suit)
                 self.deck.append(card)
 
+    # to reduce the amount and to sample from smaller sub-space
     def removeCards(self,cards):
         idx2remove = 0
         for idx,card in enumerate(self.deck):
@@ -174,7 +175,6 @@ class Poker:
         return cards
 
 
-    #TODO: need to implement deal to QAgent using it's QTable where is saved for this usage
     def deal(self,states0=None,states1=None):
         self.dealer = Dealer()
         self.dealer.shuffle()
@@ -186,6 +186,7 @@ class Poker:
         self._gameState = 0
         self.winnersIDs = []
         self.pot = self.players[self.sb].withdrawAllMoneyByLimit(0.5) + self.players[self.bb].withdrawAllMoneyByLimit(1.0)
+        ## getting into this case while the QAgent playing at test game with sub-states to deal from
         if not states0 and not states1:
             self.players[self.sb].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
             self.players[self.bb].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
@@ -410,7 +411,10 @@ class Poker:
         ranks =  sorted(ranksCount, key=ranksCount.get,reverse=True)
         return (0,ranks[0],ranks[1],ranks[2],ranks[3],ranks[4])
 
+## modeling the States of QAgent
 class States():
+    BACKTRACK_PENALTY = -0.5
+    BACKTRACK_REWARD = 0.5
     WIN = "win"
     LOSE = "lose"
     POT_INTERVAL = 4 * Poker.TOTAL_CASH + 1
@@ -426,7 +430,6 @@ class States():
     HIGH_CARD = 8
     STATE_STRUCT = (CARDS_RANGE,CARDS_RANGE,COLOR_INTERVAL,POT_INTERVAL,BLIND_INTERVAL)
 
-
     def getMultiIndex(self,index):
         return np.unravel_index(index,States.STATE_STRUCT)
 
@@ -441,6 +444,7 @@ class States():
         seeds = {}
         totalPercentile = 0.0
         if enableLearning:
+            ## creating a flat table to use it as linear and faster functionality
             table = [np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * States.POT_INTERVAL * States.BLIND_INTERVAL),np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * States.POT_INTERVAL * States.BLIND_INTERVAL)]
             self._initNextStates()
         else:
@@ -454,7 +458,7 @@ class States():
             with open(path + "\\stateSeeds.npy","rb") as f:
                 seeds = pickle.load(f)
             for key in seeds.keys():
-                totalPercentile += (table[0][key] + table[1][key]) / 2.0
+                totalPercentile += (table[Poker.ALLIN][key] + table[Poker.FOLD][key]) / 2.0
         print("completed within: ",time.time() - start,"seconds")
         return (table,seeds,totalPercentile)
 
@@ -462,6 +466,7 @@ class States():
         self._idxListSB = list()
         self._idxListBB = list()
         self._qtable,self._stateSeeds,self.totalPercentile = self._init_qtable(enableLearning,agentId)
+        self.seedsOrder = 1
         self._state = list()
         self._stateIndex = -1
         self._alpha = 0.2
@@ -478,17 +483,21 @@ class States():
         self._penalties = list()
 
     ##get methods
+    ##computing the expected action against all same hands which is changing their pot amount
     def getExpectedAction(self,state):
         avgAllin = 0.0
         avgFold = 0.0
         counter = 0
-        for key in self._stateSeeds:
+        for key in self._stateSeeds.keys():
             alterState = self.getMultiIndex(key)
             if alterState[0] == state[0] and alterState[1] == state[1] and \
                alterState[2] == state[2] and alterState[4] == state[4]:
                 counter += 1
-                avgAllin += self._qtable[Poker.ALLIN][key]
-                avgFold += self._qtable[Poker.FOLD][key]
+                weigth = 1
+                if alterState[3] == state[3]:
+                    weigth = 2
+                avgAllin += weigth * self._qtable[Poker.ALLIN][key]
+                avgFold += weigth * self._qtable[Poker.FOLD][key]
         if counter == 0:
             counter += 1
         return (((avgAllin / counter) >= (avgFold / counter)),(avgAllin + avgFold) / (2 * counter))
@@ -519,9 +528,25 @@ class States():
         return sum(self._penalties)
 
     ##set methods
-    def appendOnce(self,state):
+    def appendOnce(self,state,action):
         stateInd = self.getLinearIndex(state)
-        self._stateSeeds[stateInd] = 1
+        self._stateSeeds[stateInd] = (self.seedsOrder,action)
+        self.seedsOrder += 1
+
+    def updateAllGameRounds(self,isReward,rounds):
+        weight = States.BACKTRACK_PENALTY
+        if isReward:
+            weight = States.BACKTRACK_REWARD
+        sortedSeeds = sorted(self._stateSeeds.keys(),reverse=True)
+        idx = 0
+        for key,value in zip(self._stateSeeds.keys(),self._stateSeeds.values()):
+            if key in sortedSeeds:
+                if idx == rounds:
+                    break
+                action = value[1]
+                self._qtable[action][i] += weight
+                idx += 1
+
 
     def decreaseGamma(self,epochs):
         if self._gamma > 0 and epochs > 0:
@@ -615,6 +640,7 @@ class States():
             elif self._finalState == States.LOSE or action == Poker.ALLIN:
                 R = self._R_simple[States.WIN]
 
+        ## reward/penalty update function
         self._qtable[action][self._stateIndex] = (1.0 - self._alpha) * self._qtable[action][self._stateIndex] + \
                                                  self._alpha * (R*weight + self._gamma * self._getNextStateExpectedValue(self._state) - \
                                                  self._qtable[action][self._stateIndex])
@@ -630,6 +656,7 @@ class States():
                         self._idxListBB.append(self.getLinearIndex([j0,j1,j2,j3,1]))
 
 
+    ## computing the expected value for the next state which is SB/BB
     def _getNextStateExpectedValue(self,state):
         idxList = self._idxListBB if state[4] == 0 else self._idxListSB
         return (sum(self._qtable[0][idxList]) + sum(self._qtable[1][idxList]) + 1) / (2.0 * len(idxList) + 1)
@@ -645,6 +672,7 @@ class States():
         with open(path + "\\stateSeeds.npy","wb") as f:
             pickle.dump(self._stateSeeds,f,pickle.HIGHEST_PROTOCOL)
 
+## an interface to all agents
 class Agent:
     def __init__(self,id,epochs):
         self.loc = 0
@@ -652,18 +680,25 @@ class Agent:
         self.id = id
         self.gameWins = 0
         self.seriesWinsGraph = list()
+        self.roundsPerGame = 0
 
     def setWin(self,num):
         if self.loc < len(self.wins):
             self.wins[self.loc] = num
             self.loc += 1
+            self.roundsPerGame += 1
+
+    def backtrackUpdateStates(self,isReward):
+        pass
 
     def updateGameWins(self):
         self.gameWins += 1
         self.seriesWinsGraph.append(1)
+        self.roundsPerGame = 0
 
     def updateGameLose(self):
         self.seriesWinsGraph.append(0)
+        self.roundsPerGame = 0
 
     def plotSeriesWinsGraph(self,agentClass):
         pass
@@ -694,7 +729,7 @@ class Agent:
     def setStatus(self,statusString):
         pass
     
-    def collect(self,state):
+    def collect(self,state,action):
         pass
 
     def discount(self,epochs):
@@ -742,6 +777,7 @@ class RandomAgent(Agent):
     def getAgentClass(self):
         return __class__.__name__
 
+## outer player to play against the QAgent
 class PlayerAgent(Agent):
     def evalAct(self,state,enableLearning):
         return getInput("choose action",['Fold','All-in'])
@@ -754,13 +790,10 @@ class PlayerAgent(Agent):
                 if max_len[index] < len(str(col)):
                     max_len[index] = len(str(col))
         output = ''
-        #output = '-' * (sum(max_len) + 1) + '\n'
         output += '\t' + ''.join([h + ' ' * (l - len(h)) + '\t' for h, l in zip(header, max_len)]) + '\n'
-        #output += '-' * (sum(max_len) + 1) + '\n'
         for row in iterable:
             row = [row] if type(row) not in (list, tuple) else row
             output += '\t' + ''.join([str(c) + ' ' * (l - len(str(c))) + '\t' for c, l in zip(row, max_len)]) + '\n'
-        #output += '-' * (sum(max_len) + 1) + '\n'
         return output
 
     def getStatesObj(self):
@@ -780,6 +813,7 @@ class QAgent(Agent):
         self.bluffs = 0
 
     ##set methods
+    ## evaluate the action should be taken
     def evalAct(self,state,enableLearning):
         self._states.setCurrentState(state)
         stateIdx = self._states.getLinearIndex(state)
@@ -797,6 +831,10 @@ class QAgent(Agent):
         self.action = int(self.action)
         self.waitingForReward = True
         return self.action
+
+    ## update as backtracking all states who were piece of this game to winning
+    def backtrackUpdateStates(self,isReward):
+        self._states.updateAllGameRounds(isReward,self.roundsPerGame)
 
     def setStatus(self,statusString):
         if statusString == States.WIN:
@@ -820,8 +858,9 @@ class QAgent(Agent):
             logger.log(logger.WARNING,agentClass + " plotting learning process graph..")
             plt.show()
 
-    def collect(self,state):
-        self._states.appendOnce(state)
+    ## collect the state to use it in the game test mode
+    def collect(self,state,action):
+        self._states.appendOnce(state,action)
 
     def setReward(self,weight):
         if not self.waitingForReward:
@@ -833,6 +872,7 @@ class QAgent(Agent):
         self._states.decreaseGamma(epochs)
 
 
+    ## checking under percentile parameter if for this state it stays at low percentile, if it does - and he was winning so he was bluff his enemy
     def updateIfBluff(self,state):
         if self._states.getFinalState() == States.WIN and self.action == Poker.ALLIN:
             idx = self._states.getLinearIndex(state)
@@ -927,6 +967,7 @@ def chooseAgent(game,epochs,enableLearning,player,default):
         return StrongValidatorAgent(game.addPlayer(),epochs)
 
 
+## class with apriori knowlenge to test the capabilities of our QAgent - doesn't learning the QAgent with that Validator agent
 class StrongValidatorAgent(Agent):
     def __init__(self,id,epochs):
         super().__init__(id,epochs)
@@ -983,7 +1024,7 @@ def main(enableLearning):
             winners = game.getWinnerIDs()
 
             if enableLearning:
-                agents[playerIdTurn].collect(state)
+                agents[playerIdTurn].collect(state,action)
 
             if winners:
                 if winners[0] == agents[0].getId():
@@ -1012,9 +1053,11 @@ def main(enableLearning):
                         if game.isGameover():
                             if agent.getStatus() == States.WIN:
                                 agent.updateGameWins()
+                                agent.backtrackUpdateStates(True)
                                 weight = 100
                             else:
                                 agent.updateGameLose()
+                                agent.backtrackUpdateStates(False)
                             logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) current round wins:".format(idx+1),(agent.getWins() / agent.getEpochs()) * 100.0,"%")
                             logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) current game wins:".format(idx+1),(agent.getGameWins() / agent.getEpochs()) * 100.0,"%")
                         else:

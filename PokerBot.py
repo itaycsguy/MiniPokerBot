@@ -464,9 +464,9 @@ class States():
         self._qtable,self._stateSeeds,self.totalPercentile = self._init_qtable(enableLearning,agentId)
         self._state = list()
         self._stateIndex = -1
-        self._alpha = 0.1
-        self._gamma = 1.0
-        self._epsilon = 0.01
+        self._alpha = 0.2
+        self._gamma = 0.01
+        self._epsilon = 0.1
         self._finalState = ""
         self._R_simple = {States.WIN : 1.0,States.LOSE : -1.0}
         self._R_high = {States.WIN : 2.0,States.LOSE : -1.0}

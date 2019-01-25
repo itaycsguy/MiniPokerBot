@@ -161,8 +161,8 @@ class Poker:
             player.money = Poker.TOTAL_CASH
 
         self._isFinishRound  = False
-        self.sb = 0
-        self.bb = 1
+        self.sb = random.randint(0,1)
+        self.bb = int(not self.sb)
         self.roundWinners = []
 
     def sampleSubspace(self,state,playerId):
@@ -417,7 +417,6 @@ class States():
     BACKTRACK_REWARD = 0.5
     WIN = "win"
     LOSE = "lose"
-    POT_INTERVAL = 4 * Poker.TOTAL_CASH + 1
     COLOR_INTERVAL = 2
     BLIND_INTERVAL = 2
     CARDS_RANGE = 13
@@ -428,13 +427,13 @@ class States():
     PAIR = 3
     HIGH_PAIR = 4
     HIGH_CARD = 8
-    STATE_STRUCT = (CARDS_RANGE,CARDS_RANGE,COLOR_INTERVAL,POT_INTERVAL,BLIND_INTERVAL)
 
     def getMultiIndex(self,index):
-        return np.unravel_index(index,States.STATE_STRUCT)
+        return np.unravel_index(index,self.STATE_STRUCT)
 
     def getLinearIndex(self,indices):
-        return np.ravel_multi_index([indices[0]-2, indices[1]-2, indices[2],self.getQuantizeAmount(indices[3]),indices[4]],States.STATE_STRUCT)
+        quan_amt = self.getQuantizeAmount(indices[3])
+        return np.ravel_multi_index([indices[0]-2, indices[1]-2, indices[2],quan_amt,indices[4]],self.STATE_STRUCT)
 
     # V = (card1,card2,color/not color = {1,0},pot = [0-40],SB/BB = {1,0}) -> A = (allin = rewards,fold = rewards)
     def _init_qtable(self,enableLearning,agentId):
@@ -445,7 +444,7 @@ class States():
         totalPercentile = 0.0
         if enableLearning:
             ## creating a flat table to use it as linear and faster functionality
-            table = [np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * States.POT_INTERVAL * States.BLIND_INTERVAL),np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * States.POT_INTERVAL * States.BLIND_INTERVAL)]
+            table = [np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * self.POT_INTERVAL * States.BLIND_INTERVAL),np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * self.POT_INTERVAL * States.BLIND_INTERVAL)]
             self._initNextStates()
         else:
             print("reading QTable..")
@@ -463,6 +462,8 @@ class States():
         return (table,seeds,totalPercentile)
 
     def __init__(self,enableLearning,agentId):
+        self.POT_INTERVAL = 4 * Poker.TOTAL_CASH + 1
+        self.STATE_STRUCT = (States.CARDS_RANGE,States.CARDS_RANGE,States.COLOR_INTERVAL,self.POT_INTERVAL,States.BLIND_INTERVAL)
         self._idxListSB = list()
         self._idxListBB = list()
         self._qtable,self._stateSeeds,self.totalPercentile = self._init_qtable(enableLearning,agentId)
@@ -651,7 +652,7 @@ class States():
         for j0 in range(2,States.CARDS_RANGE + 2):
             for j1 in range(2,States.CARDS_RANGE + 2):
                 for j2 in range(States.COLOR_INTERVAL):
-                    for j3 in range(States.POT_INTERVAL - 20):
+                    for j3 in range(self.POT_INTERVAL - Poker.TOTAL_CASH * 2):
                         self._idxListSB.append(self.getLinearIndex([j0,j1,j2,j3,0]))
                         self._idxListBB.append(self.getLinearIndex([j0,j1,j2,j3,1]))
 
@@ -1000,6 +1001,10 @@ def main(enableLearning):
     win_count1 = 0
     win_count2 = 0
     epochs = getInput("Epochs ",None,200)
+    Poker.TOTAL_CASH = getInput("Money ",None,10)
+    if Poker.TOTAL_CASH < 0:
+        logger.log(logger.WARNING,"Money cannot be negative.")
+        sys.exit(1)
     totalRoundCount = 0
 
     game = Poker()

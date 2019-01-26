@@ -454,8 +454,18 @@ class States():
             except:
                 logger.log(logger.WARNING,"file " + path + "\\Qtable.npy does not exist!")
                 sys.exit(1)
-            with open(path + "\\stateSeeds.npy","rb") as f:
+            with open(path + "\\QstateSeeds.npy","rb") as f:
                 seeds = pickle.load(f)
+            try:
+                with open(path + "\\Qcash.npy","rb") as f:
+                    cash = int(pickle.load(f))
+                    if cash != Poker.TOTAL_CASH:
+                        logger.log(logger.WARNING,"enter the correct cash amount [" + str(cash) + "].")
+                        sys.exit(1)
+            except:
+                if not os.path.exists(path + "\\Qcash.npy"):
+                    logger.log(logger.WARNING,"file " + path + "\\Qcash.npy does not exist!")
+                sys.exit(1)
             for key in seeds.keys():
                 totalPercentile += (table[Poker.ALLIN][key] + table[Poker.FOLD][key]) / 2.0
         print("completed within: ",time.time() - start,"seconds")
@@ -670,8 +680,10 @@ class States():
     def saveData(self,agentId):
         path = str(os.path.dirname(str(os.path.abspath(__file__))))
         np.save(path + "\\Qtable.npy" ,self._qtable, allow_pickle=True, fix_imports=True)
-        with open(path + "\\stateSeeds.npy","wb") as f:
+        with open(path + "\\QstateSeeds.npy","wb") as f:
             pickle.dump(self._stateSeeds,f,pickle.HIGHEST_PROTOCOL)
+        with open(path + "\\Qcash.npy","wb") as f:
+            pickle.dump(Poker.TOTAL_CASH,f,pickle.HIGHEST_PROTOCOL)
 
 ## an interface to all agents
 class Agent:

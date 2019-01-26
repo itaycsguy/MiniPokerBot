@@ -21,6 +21,6 @@ pickle
 from collections import Counter
 matplotlib.pyplot
 
-Developers: Itay Guy & Din Sharaby
+Developers: Itay Guy 305104184 & Din Sharaby 311138747
 
 Have fun playing.

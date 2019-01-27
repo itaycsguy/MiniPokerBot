@@ -1000,6 +1000,16 @@ class StrongValidatorAgent(Agent):
     def getStatesObj(self):
         return None
 
+    def setStatus(self,statusString):
+        self.finalStatus = statusString
+        if statusString == States.WIN:
+            self.setWin(1)
+        else:
+            self.setWin(0)
+
+    def getStatus(self):
+        return self.finalStatus
+
     def getAgentClass(self):
         return __class__.__name__
 

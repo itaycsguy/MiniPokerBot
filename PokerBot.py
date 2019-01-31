@@ -1,5 +1,5 @@
-##version 0.6
-##developers: Itay Guy & Din Sharaby
+##version 0.7
+##developers: Itay & Dean
 import random,math,os,sys
 import numpy as np
 import itertools
@@ -9,22 +9,117 @@ import copy
 import time
 import pickle
 from collections import Counter
-import matplotlib.pyplot as plt
 
+
+######## AUX START ########
 class logger:
     DEBUG = 0
     INFO = 1
     WARNING = 2
     CRITICAL = 3
+    USERREQUEST = 4
+
+    threshold = 0
+
+    @staticmethod
+    def setPrintThreshold(level):
+         logger.threshold = level
 
     @staticmethod
     def log(level,*args):
-        if (level >= 0):
+        if (level >= logger.threshold):
             print (*args)
+
+def get_pretty_table(iterable, header):
+    max_len = [len(x) for x in header]
+    for row in iterable:
+        row = [row] if type(row) not in (list, tuple) else row
+        for index, col in enumerate(row):
+            if max_len[index] < len(str(col)):
+                max_len[index] = len(str(col))
+    output = '-' * (sum(max_len) + 1) + '\n'
+    output += '|' + ''.join([h + ' ' * (l - len(h)) + '|' for h, l in zip(header, max_len)]) + '\n'
+    output += '-' * (sum(max_len) + 1) + '\n'
+    for row in iterable:
+        row = [row] if type(row) not in (list, tuple) else row
+        output += '|' + ''.join([str(c) + ' ' * (l - len(str(c))) + '|' for c, l in zip(row, max_len)]) + '\n'
+    output += '-' * (sum(max_len) + 1)
+    return output
+
+def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█'):
+    """
+    Call in a loop to create terminal progress bar
+    @params:
+        iteration   - Required  : current iteration (Int)
+        total       - Required  : total iterations (Int)
+        prefix      - Optional  : prefix string (Str)
+        suffix      - Optional  : suffix string (Str)
+        decimals    - Optional  : positive number of decimals in percent complete (Int)
+        length      - Optional  : character length of bar (Int)
+        fill        - Optional  : bar fill character (Str)
+    """
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filledLength = int(length * iteration // total)
+    bar = fill * filledLength + '-' * (length - filledLength)
+    print('\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
+    # Print New Line on Complete
+    if iteration == total: 
+        print()
+
+def getInput(output,options = None,default = None):
+    while (True):
+        try:
+            outMsg = output
+            outOptions = ''
+            if (options is not None):
+                outOptions += ' ['
+                comma = ""
+                for i in range(len(options)):
+                    outOptions += comma + str(i) +"-"+ options[i]
+                    comma = ","
+                    if (i == default):
+                        outOptions += ' DEFAULT'
+                outOptions += '] '
+                
+            response = input(outMsg  + outOptions + ": ")
+            if (response == '' and default is not None):
+                return default
+            response = int(response)
+            if (options is not None and (response < 0 or response > len(options))):
+                logger.log(logger.WARNING,'Invalid input, Please choose: ', outOptions)
+                continue
+            return response
+        except:
+            logger.log(logger.WARNING,'Input must be an integer!')
+
+def chooseAgent(epochs,enableLearning,loadtable,player,default):
+    chosenAgent = getInput("Choose Player " + str(player) ,['QAgent','RandomAgent','PlayerAgent','StrongValidatorAgent'],default)
+    if (chosenAgent == 0):
+        return QAgent(Poker.INSTANCE.addPlayer(),epochs,enableLearning,loadtable)
+    if (chosenAgent == 1):
+        return RandomAgent(Poker.INSTANCE.addPlayer(),epochs,enableLearning,loadtable)
+    if (chosenAgent == 2):
+        return PlayerAgent(Poker.INSTANCE.addPlayer(),epochs,enableLearning,loadtable)
+    if (chosenAgent == 3):
+        return StrongValidatorAgent(Poker.INSTANCE.addPlayer(),epochs,enableLearning,loadtable)
+
+def print_states(states):
+    qtable = states.getQTable()
+    for i in states.getStateSeeds().keys():
+        arr = states.getMultiIndex(i)
+        arr = list(arr)
+        arr[0] += 2
+        arr[1] += 2
+        print(arr,'\t',qtable[Poker.ALLIN][i],'\t',qtable[Poker.FOLD][i])
+
+######## AUX END ##########
+##-------------------------------------------------------------
+#### POKER GAME START ####
 
 class Card:
   RANKS = (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
   SUITS = (u"\u2665", u"\u2666", u"\u2663", u"\u2660")
+  #SUITS = (u"a", u"b", u"c", u"d")
 
   def __init__ (self, rank, suit):
     self.rank = rank
@@ -112,7 +207,21 @@ class Player:
 	money = 0
 	cards = []
 	dividend = 0
+	status = -1
 	
+	def getStatus(self):
+		return self.status
+
+	def setStatus(self,status):
+		self.status = status
+
+	def getStatusStr(self):
+		if (self.status == Poker.ALLIN):
+			return "All in"
+		if (self.status == Poker.FOLD):
+			return "Fold"
+		if (self.status == Poker.PENDING):
+			return "Pending"
 
 	def __init__(self,id):
 		self.id = id
@@ -123,6 +232,7 @@ class Player:
 		return m
 
 	def deal(self,cards):
+		self.setStatus(Poker.PENDING)
 		self.cards = cards
 
 	def getMoney(self):
@@ -137,18 +247,27 @@ class Player:
 		return self.dividend
 
 class Poker:
+    INSTANCE = None
     HANDS = ('High Card','Pair','Two pair','Three of a kind','Straight','Flush','Full house','Four of a kind','Straight flush','Royal flush')
+    PENDING = -1
     FOLD  = 0
     ALLIN = 1
     SBTURN = 0
     BBTURN = 1
     ENDROUND = 2
     GAMEOVER = 3
-    TOTAL_ENTRYBET = 1.5
-    TOTAL_CASH = 10
+    TOTAL_SB_ENTRYBET = 0.5
+    TOTAL_BB_ENTRYBET = 1.0
 
-    def __init__(self):
+    def __init__(self,CashStartingAmount):
+        if CashStartingAmount < 0:
+            logger.log(logger.WARNING,"Money cannot be negative.")
+            os.system("PAUSE")
+            sys.exit(0)
+        self.playerCashStartingAmount = CashStartingAmount
         self.players = []
+
+    
 
 	##control the game
     def addPlayer(self):
@@ -158,76 +277,85 @@ class Poker:
 
     def reset(self):
         for player in self.players:
-            player.money = Poker.TOTAL_CASH
+            player.money =  self.getPlayerStartingAmount()
 
-        self._isFinishRound  = False
         self.sb = random.randint(0,1)
-        self.bb = int(not self.sb)
+        self.bb = self.sb ^ 1 ## (0 xor 1 = 1) (1 xor 1 = 0)
         self.roundWinners = []
+        self._gameState = Poker.ENDROUND
 
-    def sampleSubspace(self,state,playerId):
+    def sampleSubspace(self,state):
         state0 = state.getMultiIndex(random.choice(list(state.getStateSeeds().keys())))
         r1,r2 = random.sample(Card.SUITS,2)
         if state0[2] == 1:
             r2 = r1
         cards = [Card(state0[0]+2,r1),Card(state0[1]+2, r2)]
-        self.players[playerId].deal(cards)
         return cards
 
+    def getPlayerStatus(self,id):
+        return (self.players[id].getStatus())
 
     def deal(self,states0=None,states1=None):
         self.dealer = Dealer()
         self.dealer.shuffle()
-        self.sb = (self.sb +1) % len(self.players)
-        self.bb = (self.sb +1) % len(self.players)
-        self.effetivePot = min(self.players[0].getMoney(),self.players[1].getMoney())
-        logger.log(logger.INFO,"player 1: ", self.players[0].cards)        
-        logger.log(logger.INFO,"player 2: ", self.players[1].cards)     
-        self._gameState = 0
+        self.sb = self.sb ^ 1 
+        self.bb = self.bb ^ 1 
+        self._gameState = 0 
         self.winnersIDs = []
         self.pot = self.players[self.sb].withdrawAllMoneyByLimit(0.5) + self.players[self.bb].withdrawAllMoneyByLimit(1.0)
+
         ## getting into this case while the QAgent playing at test game with sub-states to deal from
         if not states0 and not states1:
-            self.players[self.sb].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
-            self.players[self.bb].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
+            self.players[0].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
+            self.players[1].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
         else:                
             if states0:
-                cards = self.sampleSubspace(states0,0)
+                cards = self.sampleSubspace(states0)
                 self.dealer.removeCards(cards)
-            if states1:
-                self.sampleSubspace(states1,1)
-            else:
-                cards = self.dealer.deal(2)
+                self.players[0].deal(sorted(cards, key=operator.attrgetter('rank')))
+                self.players[1].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
+            elif states1:
+                cards = self.sampleSubspace(states1)
+                self.dealer.removeCards(cards)
                 self.players[1].deal(sorted(cards, key=operator.attrgetter('rank')))
-
+                self.players[0].deal(sorted(self.dealer.deal(2), key=operator.attrgetter('rank')))
+            else:
+                logger.log(logger.CRITICAL,"2 Qagents is not suppoted in reduced states")
+ 
 
     def setAction(self,action):
         prev_pot = self.pot
         if (self._gameState == Poker.SBTURN):
+            self.players[self.sb].setStatus(action)
             if (action == Poker.FOLD):
                 self.winnersIDs = [self.bb]
-                logger.log(logger.INFO,"player",self.sb+1,"makes fold")
+                #logger.log(logger.DEBUG,"player",self.sb,"folds")
+                self.renderGame()
                 self.setEndStatus() 
             elif (action == Poker.ALLIN):
                 self.pot += self.players[self.sb].withdrawAllMoneyByLimit(self.players[self.bb].getMoney())
-                logger.log(logger.INFO,"player",self.sb+1,"makes allin")
+                #logger.log(logger.DEBUG,"player",self.sb,"all-in")
                 self._gameState = Poker.BBTURN
             else:
-                logger.log(logger.INFO,'Unknown action... try again. pot: ' + str(self.pot))
+                logger.log(logger.CRITICAL,'Invalid poker action made by an agent!')
         elif (self._gameState == Poker.BBTURN):
+            self.players[self.bb].setStatus(action)
             if (action == Poker.FOLD):
                 self.winnersIDs = [self.sb]
-                logger.log(logger.INFO,"player",self.bb+1,"makes fold")
+                #logger.log(logger.DEBUG,"player",self.bb,"fold")
+                self.renderGame()
                 self.setEndStatus()
             elif (action == Poker.ALLIN):
-                self.pot += self.players[self.bb].withdrawAllMoneyByLimit(self.pot - Poker.TOTAL_ENTRYBET)
+                
+                #logger.log(logger.DEBUG,"player",self.bb,"all-in\n")
+                self.pot += self.players[self.bb].withdrawAllMoneyByLimit(self.pot - Poker.TOTAL_BB_ENTRYBET)
+                self.renderGame()
                 self.showDown()
-                logger.log(logger.INFO,"player",self.bb+1,"makes allin")
                 self.setEndStatus()
             else:
-                logger.log(logger.CRITICAL,'Unknown action... try again. pot: ')
+                logger.log(logger.CRITICAL,'Invalid poker action made by an agent!')
         else:
-            logger.log(logger.CRITICAL,'Unknown action... try again. pot: ')
+            logger.log(logger.CRITICAL,'Invalid poker action made by an agent!')
         return ((self.pot - prev_pot)/max(1.0,max(self.pot,prev_pot)))
 
 	###internal functions#####
@@ -254,7 +382,7 @@ class Poker:
 
     def showDown(self):
         flop = self.dealer.deal(5)
-        logger.log(logger.WARNING,"flop: {}".format(flop))
+        logger.log(logger.DEBUG,"flop: {}".format(flop))
         sbhand,sbscore,sbrank = self.getBestHandByScore(flop + self.players[self.sb].cards)
         bbhand,bbscore,bbrank = self.getBestHandByScore(flop + self.players[self.bb].cards)
 
@@ -266,6 +394,9 @@ class Poker:
             self.winnersIDs = [self.sb,self.bb]
 
 	##get game info
+    def getPlayerStartingAmount(self):
+        return self.playerCashStartingAmount
+
     def getplayerIDTurn(self):
         if (self._gameState == Poker.BBTURN):
             return self.bb
@@ -275,8 +406,33 @@ class Poker:
     def getPlayersCount(self):
         return len(self.players)
 
+    def getCurrentRoundNumber(self):
+        return len(self.roundWinners)
+
     def printStatus(self):
-        logger.log(logger.INFO,"gameover:",self.roundWinners)
+        logger.log(logger.DEBUG,"Gameover:",self.roundWinners)
+
+    def renderGame(self,id=None):
+        table = []
+        headers = ['id','type','money','cards','status']
+        
+        for player in self.players:
+            row = []  
+            row.append(player.id)
+            if (self.bb == player.id):
+                row.append('BB')  
+            if (self.sb == player.id): 
+                row.append('SB')  
+            row.append(str(player.getMoney()) + '$')
+            if id is None or id == player.id:
+                row.append(str(player.cards))
+            else:
+                row.append(str('[HH,HH]'))
+            row.append(" " + player.getStatusStr() + " ")
+            table.append(row)
+
+        logger.log(logger.DEBUG,get_pretty_table(table,headers))
+        logger.log(logger.DEBUG,"Pot:",str(self.pot) + '%')
 
     def getPot(self):
         return self.pot
@@ -292,7 +448,7 @@ class Poker:
                 int(self.sb == id))
 
     def isRoundFinished(self):
-        return self._gameState == Poker.ENDROUND
+        return (self._gameState == Poker.ENDROUND) or self.isGameover()
 
     def isGameover(self):
         return self._gameState == Poker.GAMEOVER
@@ -411,580 +567,105 @@ class Poker:
         ranks =  sorted(ranksCount, key=ranksCount.get,reverse=True)
         return (0,ranks[0],ranks[1],ranks[2],ranks[3],ranks[4])
 
-## modeling the States of QAgent
-class States():
-    BACKTRACK_PENALTY = -0.5
-    BACKTRACK_REWARD = 0.5
-    WIN = "win"
-    LOSE = "lose"
-    COLOR_INTERVAL = 2
-    BLIND_INTERVAL = 2
-    CARDS_RANGE = 13
-    POOR_PERCENTILE = 0.10
-    ORD = 0
-    ONE_HIGH = 1
-    TWO_HIGHS = 2
-    PAIR = 3
-    HIGH_PAIR = 4
-    HIGH_CARD = 8
+#### POKER GAME END ####
 
-    def getMultiIndex(self,index):
-        return np.unravel_index(index,self.STATE_STRUCT)
+##------------------------------------------------------------
+#######  AGENTS  ############
 
-    def getLinearIndex(self,indices):
-        quan_amt = self.getQuantizeAmount(indices[3])
-        return np.ravel_multi_index([indices[0]-2, indices[1]-2, indices[2],quan_amt,indices[4]],self.STATE_STRUCT)
-
-    # V = (card1,card2,color/not color = {1,0},pot = [0-40],SB/BB = {1,0}) -> A = (allin = rewards,fold = rewards)
-    def _init_qtable(self,enableLearning,agentId):
-        start = time.time()
-        time.clock()
-        table = list()
-        seeds = {}
-        totalPercentile = 0.0
-        if enableLearning:
-            ## creating a flat table to use it as linear and faster functionality
-            table = [np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * self.POT_INTERVAL * States.BLIND_INTERVAL),np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * self.POT_INTERVAL * States.BLIND_INTERVAL)]
-            self._initNextStates()
-        else:
-            print("reading QTable..")
-            path = str(os.path.dirname(str(os.path.abspath(__file__))))
-            try:
-                table = np.load(path + "\\Qtable.npy")
-            except:
-                logger.log(logger.WARNING,"file " + path + "\\Qtable.npy does not exist!")
-                sys.exit(1)
-            with open(path + "\\QstateSeeds.npy","rb") as f:
-                seeds = pickle.load(f)
-            try:
-                with open(path + "\\Qcash.npy","rb") as f:
-                    cash = int(pickle.load(f))
-                    if cash != Poker.TOTAL_CASH:
-                        logger.log(logger.WARNING,"enter the correct cash amount [" + str(cash) + "].")
-                        sys.exit(1)
-            except:
-                if not os.path.exists(path + "\\Qcash.npy"):
-                    logger.log(logger.WARNING,"file " + path + "\\Qcash.npy does not exist!")
-                sys.exit(1)
-            for key in seeds.keys():
-                totalPercentile += (table[Poker.ALLIN][key] + table[Poker.FOLD][key]) / 2.0
-        print("completed within: ",time.time() - start,"seconds")
-        return (table,seeds,totalPercentile)
-
-    def __init__(self,enableLearning,agentId):
-        self.POT_INTERVAL = 4 * Poker.TOTAL_CASH + 1
-        self.STATE_STRUCT = (States.CARDS_RANGE,States.CARDS_RANGE,States.COLOR_INTERVAL,self.POT_INTERVAL,States.BLIND_INTERVAL)
-        self._idxListSB = list()
-        self._idxListBB = list()
-        self._qtable,self._stateSeeds,self.totalPercentile = self._init_qtable(enableLearning,agentId)
-        self.seedsOrder = 1
-        self._state = list()
-        self._stateIndex = -1
-        self._alpha = 0.2
-        self._gamma = 0.01
-        self._epsilon = 0.1
-        self._finalState = ""
-        self._R_simple = {States.WIN : 1.0,States.LOSE : -1.0}
-        self._R_high = {States.WIN : 2.0,States.LOSE : -1.0}
-        self._R_twoHighs = {States.WIN : 3.0,States.LOSE : -1.0}
-        self._R_pair = {States.WIN : 6.0,States.LOSE : -2.0}
-        self._R_color = {States.WIN : 6.0,States.LOSE : -2.0}
-        self._R_highPair = {States.WIN : 12.0,States.LOSE : -3.0}
-        self._R_highColor = {States.WIN : 12.0,States.LOSE : -3.0}
-        self._penalties = list()
-
-    ##get methods
-    ##computing the expected action against all same hands which is changing their pot amount
-    def getExpectedAction(self,state):
-        avgAllin = 0.0
-        avgFold = 0.0
-        counter = 0
-        for key in self._stateSeeds.keys():
-            alterState = self.getMultiIndex(key)
-            if alterState[0] == state[0] and alterState[1] == state[1] and \
-               alterState[2] == state[2] and alterState[4] == state[4]:
-                counter += 1
-                weigth = 1
-                if alterState[3] == state[3]:
-                    weigth = 2
-                avgAllin += weigth * self._qtable[Poker.ALLIN][key]
-                avgFold += weigth * self._qtable[Poker.FOLD][key]
-        if counter == 0:
-            counter += 1
-        return (((avgAllin / counter) >= (avgFold / counter)),(avgAllin + avgFold) / (2 * counter))
-
-
-    def getTotalPercentile(self):
-        return self.totalPercentile
-
-    def getFinalState(self):
-        return self._finalState
-
-    def getQTable(self):
-        return self._qtable
-
-    def getEpsilon(self):
-        return self._epsilon
-
-    def getStateSeeds(self):
-        return self._stateSeeds
-
-    def getStateIndex(self):
-        return self._stateIndex
-
-    def getQuantizeAmount(self,amount):
-        return int(2 * amount)
-
-    def getSumPenalties(self):
-        return sum(self._penalties)
-
-    ##set methods
-    def appendOnce(self,state,action):
-        stateInd = self.getLinearIndex(state)
-        self._stateSeeds[stateInd] = (self.seedsOrder,action)
-        self.seedsOrder += 1
-
-    def updateAllGameRounds(self,isReward,rounds):
-        weight = States.BACKTRACK_PENALTY
-        if isReward:
-            weight = States.BACKTRACK_REWARD
-        sortedSeeds = sorted(self._stateSeeds.keys(),reverse=True)
-        idx = 0
-        for key,value in zip(self._stateSeeds.keys(),self._stateSeeds.values()):
-            if key in sortedSeeds:
-                if idx == rounds:
-                    break
-                action = value[1]
-                self._qtable[action][i] += weight
-                idx += 1
-
-
-    def decreaseGamma(self,epochs):
-        if self._gamma > 0 and epochs > 0:
-            self._gamma -= 1/epochs
-
-    def setCurrentState(self,state):
-        self._state = state
-
-    def setStateIndex(self,stateIdx):
-        self._stateIndex = stateIdx
-
-    def setFinalState(self,final):
-        self._finalState = final
-
-    def _isOneHigh(self,state):
-        return True if state[0] > States.HIGH_CARD or state[1] > States.HIGH_CARD else False
-
-    def _isTwoHigh(self,state):
-        return True if state[0] > States.HIGH_CARD and state[1] > States.HIGH_CARD else False
-
-    def _isPair(self,state):
-        return True if state[0] == state[1] else False
-
-    def _isHighPair(self,state):
-        return True if self._isPair(state) and self._isOneHigh(state) else False
-
-    def getCurrCardsStatus(self):
-        state = self.getMultiIndex(self._stateIndex)
-        if self._isOneHigh(state):
-            return States.ONE_HIGH
-        elif self._isTwoHigh(state):
-            return States.TWO_HIGHS
-        elif self._isPair(state):
-            return States.PAIR
-        elif self._isHighPair(state):
-            return States.HIGH_PAIR
-        else:
-            return States.ORD
-
-    def setStateReward(self,action,weight):
-        cardsStatus = self.getCurrCardsStatus()
-        
-        ##initialize
-        if self.getFinalState() == States.WIN:
-            R = self._R_simple[States.WIN]
-        else:
-            R = self._R_simple[States.LOSE]
-
-        ##cases for better diversity between different states by action and its result
-        if cardsStatus == States.ONE_HIGH:
-            if self._finalState == States.LOSE and action == Poker.ALLIN:
-                self._penalties.append(self._R_high[States.LOSE])
-                R = self._R_high[States.LOSE]
-            elif self._finalState == States.LOSE:
-                R = self._R_simple[States.WIN]
-            elif action == Poker.ALLIN:
-                R = self._R_high[States.WIN]
-
-
-        elif cardsStatus == States.TWO_HIGHS:
-            if self._finalState == States.LOSE and action == Poker.ALLIN:
-                self._penalties.append(self._R_twoHighs[States.LOSE])
-                R = self._R_twoHighs[States.LOSE]
-            elif self._finalState == States.LOSE:
-                R = self._R_simple[States.WIN]
-            elif action == Poker.ALLIN:
-                R = self._R_twoHighs[States.WIN]
-
-        elif cardsStatus == States.PAIR:
-            if self._finalState == States.LOSE and action == Poker.ALLIN:
-                self._penalties.append(self._R_pair[States.LOSE])
-                R = self._R_pair[States.LOSE]
-            elif self._finalState == States.LOSE:
-                R = self._R_simple[States.WIN]
-            elif action == Poker.ALLIN:
-                R = self._R_pair[States.WIN]
-
-        elif cardsStatus == States.HIGH_PAIR:
-            if self._finalState == States.LOSE and action == Poker.ALLIN:
-                self._penalties.append(self._R_highPair[States.LOSE])
-                R = self._R_highPair[States.LOSE]
-            elif self._finalState == States.LOSE:
-                R = self._R_simple[States.WIN]
-            elif action == Poker.ALLIN:
-                R = self._R_highPair[States.WIN]
-
-        elif cardsStatus == States.ORD:
-            if self._finalState == States.LOSE and action == Poker.ALLIN:
-                self._penalties.append(self._R_simple[States.LOSE])
-                R = self._R_simple[States.LOSE]
-            elif self._finalState == States.LOSE or action == Poker.ALLIN:
-                R = self._R_simple[States.WIN]
-
-        ## reward/penalty update function
-        self._qtable[action][self._stateIndex] = (1.0 - self._alpha) * self._qtable[action][self._stateIndex] + \
-                                                 self._alpha * (R*weight + self._gamma * self._getNextStateExpectedValue(self._state) - \
-                                                 self._qtable[action][self._stateIndex])
-
-
-    ##private methods
-    def _initNextStates(self):
-        for j0 in range(2,States.CARDS_RANGE + 2):
-            for j1 in range(2,States.CARDS_RANGE + 2):
-                for j2 in range(States.COLOR_INTERVAL):
-                    for j3 in range(self.POT_INTERVAL - Poker.TOTAL_CASH * 2):
-                        self._idxListSB.append(self.getLinearIndex([j0,j1,j2,j3,0]))
-                        self._idxListBB.append(self.getLinearIndex([j0,j1,j2,j3,1]))
-
-
-    ## computing the expected value for the next state which is SB/BB
-    def _getNextStateExpectedValue(self,state):
-        idxList = self._idxListBB if state[4] == 0 else self._idxListSB
-        return (sum(self._qtable[0][idxList]) + sum(self._qtable[1][idxList]) + 1) / (2.0 * len(idxList) + 1)
-
-    ##boolean methods
-    def isEqual(self,state0,state1):
-        return (self.getLinearIndex(state0) == self.getLinearIndex(state1))
-
-    ##maintenance methods
-    def saveData(self,agentId):
-        path = str(os.path.dirname(str(os.path.abspath(__file__))))
-        np.save(path + "\\Qtable.npy" ,self._qtable, allow_pickle=True, fix_imports=True)
-        with open(path + "\\QstateSeeds.npy","wb") as f:
-            pickle.dump(self._stateSeeds,f,pickle.HIGHEST_PROTOCOL)
-        with open(path + "\\Qcash.npy","wb") as f:
-            pickle.dump(Poker.TOTAL_CASH,f,pickle.HIGHEST_PROTOCOL)
-
-## an interface to all agents
 class Agent:
-    def __init__(self,id,epochs):
-        self.loc = 0
-        self.wins = np.zeros(epochs)
+    def __init__(self,id,epochs,enableLearning,loadtable):
         self.id = id
+        self.roundWins = 0
         self.gameWins = 0
         self.seriesWinsGraph = list()
-        self.roundsPerGame = 0
 
-    def setWin(self,num):
-        if self.loc < len(self.wins):
-            self.wins[self.loc] = num
-            self.loc += 1
-            self.roundsPerGame += 1
+        self.enableLearning = enableLearning
+        self.waitingForReward = False
+        self.action = None
+        self.bluffs = 0
+        self._states = States(loadtable,id) ##loadtable = enableLearning
+        self.status = None
 
-    def backtrackUpdateStates(self,isReward):
+
+    def getWinsFreqPerGame(self,totalRounds):
+        return (0 if self.gameWins == 0 else (totalRounds / self.gameWins))
+
+    def getBluffs(self):
+        return self.bluffs
+
+    def getRoundWins(self):
+        return self.roundWins
+
+    def backtrackUpdateStates(self):
         pass
 
-    def updateGameWins(self):
-        self.gameWins += 1
-        self.seriesWinsGraph.append(1)
-        self.roundsPerGame = 0
-
-    def updateGameLose(self):
-        self.seriesWinsGraph.append(0)
-        self.roundsPerGame = 0
-
-    def plotSeriesWinsGraph(self,agentClass):
+    def trackAgentGames(self):
+        self.gameWins += 1 if self.getStatesObj().getLastRoundResult() == States.WIN else 0
+        self.seriesWinsGraph.append(self.gameWins)
+        
+    def plotSeriesWinsGraph(self):
         pass
 
     def getGameWins(self):
         return self.gameWins
 
-    def getWins(self):
-        count = 0
-        for i in self.wins:
-            if i == 1:
-                count += 1
-        return count
-
-    def getEpochs(self):
-        count = 0
-        for i in self.wins:
-            if i == 1 or i == 0:
-                count += 1
-        return count
-
-    def evalAct(self,state,enableLearning):
+    def evalAct(self,state):
         pass
 
-    def setReward(self,weight):
+    def setReward(self,epochs,R):
         pass
 
-    def setStatus(self,statusString):
-        pass
-    
-    def collect(self,state,action):
-        pass
-
-    def discount(self,epochs):
-        pass
-
-    def updateIfBluff(self,state):
+    def updateIfBluff(self):
         pass
 
     def getStatus(self):
-        pass
+        return self.status
 
     def getStatesObj(self):
-        pass
+        return self._states
 
     def getId(self):
         return self.id
 
     def save(self):
         pass
+    
+    def getTotalPenalties(self):
+        return None
+
+    def setLastRoundResult(self,result):
+        self.getStatesObj().setLastRoundResult(result)
+        if result == States.WIN:
+            self.roundWins += 1
+
+    def getLastRoundResult(self):
+        return self.getStatesObj().getLastRoundResult()
+
+    def normalize(self):
+        pass
 
     def getAgentClass(self):
         return __class__.__name__
 
 class RandomAgent(Agent):
-    def __init__(self,id,epochs):
-        super().__init__(id,epochs)
-        self.finalStatus = ""
 
-    def evalAct(self,state,enableLearning):
+    def evalAct(self,state):
         return random.randint(0,1)
 
-    def getStatesObj(self):
-        return None
-
-    def setStatus(self,statusString):
-        self.finalStatus = statusString
-        if statusString == States.WIN:
-            self.setWin(1)
-        else:
-            self.setWin(0)
-
-    def getStatus(self):
-        return self.finalStatus
-
     def getAgentClass(self):
         return __class__.__name__
 
-## outer player to play against the QAgent
 class PlayerAgent(Agent):
-    def evalAct(self,state,enableLearning):
-        return getInput("choose action",['Fold','All-in'])
-
-    def get_pretty_table(iterable, header):
-        max_len = [len(x) for x in header]
-        for row in iterable:
-            row = [row] if type(row) not in (list, tuple) else row
-            for index, col in enumerate(row):
-                if max_len[index] < len(str(col)):
-                    max_len[index] = len(str(col))
-        output = ''
-        output += '\t' + ''.join([h + ' ' * (l - len(h)) + '\t' for h, l in zip(header, max_len)]) + '\n'
-        for row in iterable:
-            row = [row] if type(row) not in (list, tuple) else row
-            output += '\t' + ''.join([str(c) + ' ' * (l - len(str(c))) + '\t' for c, l in zip(row, max_len)]) + '\n'
-        return output
-
-    def getStatesObj(self):
-        return None
+    def evalAct(self,state):
+        Poker.INSTANCE.renderGame(self.id)
+        return getInput("Please choose action",['Fold','All-in'])
 
     def getAgentClass(self):
         return __class__.__name__
 
-     
-class QAgent(Agent):
-    def __init__(self,id,epochs,enableLearning):
-        super().__init__(id,epochs)
-        self._states = States(enableLearning,id)
-        self.waitingForReward = False
-        self.action = 0
-        self._agentId = id
-        self.bluffs = 0
-
-    ##set methods
-    ## evaluate the action should be taken
-    def evalAct(self,state,enableLearning):
-        self._states.setCurrentState(state)
-        stateIdx = self._states.getLinearIndex(state)
-        self._states.setStateIndex(stateIdx)
-        qtable = self._states.getQTable()
-        if not enableLearning:
-            self.action = self._states.getExpectedAction(state)
-            self.action = self.action[0]
-        else:
-            allinVal = qtable[Poker.ALLIN][stateIdx]
-            foldVal = qtable[Poker.FOLD][stateIdx]
-            self.action = (allinVal >= foldVal)
-            if (np.random.rand() < self._states.getEpsilon()):
-                self.action = not self.action
-        self.action = int(self.action)
-        self.waitingForReward = True
-        return self.action
-
-    ## update as backtracking all states who were piece of this game to winning
-    def backtrackUpdateStates(self,isReward):
-        self._states.updateAllGameRounds(isReward,self.roundsPerGame)
-
-    def setStatus(self,statusString):
-        if statusString == States.WIN:
-            self.setWin(1)
-        else:
-            self.setWin(0)
-        self._states.setFinalState(statusString)
-
-    def plotSeriesWinsGraph(self,agentClass):
-        accumulatedAxis = list()
-        for counter,item in enumerate(self.seriesWinsGraph):
-            if item == 1:
-                counter += 1
-                accumulatedAxis.append(counter)
-        if accumulatedAxis:
-            plt.plot(range(len(accumulatedAxis)),accumulatedAxis,linewidth=3,markersize=1)
-            plt.xlabel('Wins')
-            plt.ylabel('Epochs')
-            plt.title('QAgent Improvement Curve')
-            plt.grid(True)
-            logger.log(logger.WARNING,agentClass + " plotting learning process graph..")
-            plt.show()
-
-    ## collect the state to use it in the game test mode
-    def collect(self,state,action):
-        self._states.appendOnce(state,action)
-
-    def setReward(self,weight):
-        if not self.waitingForReward:
-            return
-        self.waitingForReward = False
-        self._states.setStateReward(self.action,weight)
-
-    def discount(self,epochs):
-        self._states.decreaseGamma(epochs)
-
-
-    ## checking under percentile parameter if for this state it stays at low percentile, if it does - and he was winning so he was bluff his enemy
-    def updateIfBluff(self,state):
-        if self._states.getFinalState() == States.WIN and self.action == Poker.ALLIN:
-            idx = self._states.getLinearIndex(state)
-            qtable = self._states.getQTable()
-            stateRank = self._states.getExpectedAction(state)
-            stateRank = stateRank[1]
-            if stateRank < States.POOR_PERCENTILE*self._states.getTotalPercentile():
-                self.bluffs += 1
-
-
-    ##get methods
-    def getAvgWinsPerGame(self):
-        if self.gameWins > 0:
-            return sum(self.wins)/self.gameWins
-        return 0
-
-    def getAccumulatedSeq(self):
-        return self.accumulatedSeq
-
-    def getBluffs(self):
-        return self.bluffs
-
-    def getActionValue(self):
-        qtable = self._states.getQTable()
-        return qtable[self.action][self._states.getStateIndex()]
-
-    def getAction(self):
-        return self.action
-
-    def action2String(self,action):
-        if action == Poker.FOLD:
-            return "fold"
-        elif action == Poker.ALLIN:
-            return "allin"
-
-    def getStatesObj(self):
-        return self._states
-
-    def getStatus(self):
-        return self._states.getFinalState()
-
-    ##maintenance methods
-    def getAgentClass(self):
-        return __class__.__name__
-
-    def getAgentId(self):
-        return self._agentId
-
-    def save(self):
-        agentClass = self.getAgentClass()
-        agentId = self.getAgentId()
-        self._states.saveData(agentId)
-        logger.log(logger.WARNING,agentClass + " (id:{}) saved all data.".format(str(agentId)))
-
-
-def getInput(output,options = None,default = None):
-    while (True):
-        try:
-            outMsg = output
-            outOptions = ''
-            if (options is not None):
-                outOptions += ' ['
-                comma = ""
-                for i in range(len(options)):
-                    outOptions += comma + str(i) +"-"+ options[i]
-                    comma = ","
-                    if (i == default):
-                        outOptions += ' DEFAULT'
-                outOptions += '] '
-                
-            response = input(outMsg  + outOptions + ": ")
-            if (response == '' and default is not None):
-                return default
-            response = int(response)
-            if (options is not None and (response < 0 or response > len(options))):
-                logger.log(logger.WARNING,'Invalid input, Please choose: ', outOptions)
-                continue
-            return response
-        except:
-            logger.log(logger.WARNING,'Input must be an integer!')
-
-
-def chooseAgent(game,epochs,enableLearning,player,default):
-    chosenAgent = getInput("Choose Player " + str(player) ,['QAgent','RandomAgent','PlayerAgent','StrongValidatorAgent'],default)
-    if (chosenAgent == 0):
-        return QAgent(game.addPlayer(),epochs,enableLearning)
-    if (chosenAgent == 1):
-        return RandomAgent(game.addPlayer(),epochs)
-    if (chosenAgent == 2):
-        return PlayerAgent(game.addPlayer(),epochs)
-    if (chosenAgent == 3):
-        return StrongValidatorAgent(game.addPlayer(),epochs)
-
-
-## class with apriori knowlenge to test the capabilities of our QAgent - doesn't learning the QAgent with that Validator agent
 class StrongValidatorAgent(Agent):
-    def __init__(self,id,epochs):
-        super().__init__(id,epochs)
-    def evalAct(self,state,enableLearning):
+    ## class with apriori knowlenge to test the capabilities of our QAgent - doesn't learning the QAgent with that Validator agent
+    def evalAct(self,state):
         if (state[3] < 5):
             return 1
         if (state[0] == state[1]):
@@ -997,149 +678,519 @@ class StrongValidatorAgent(Agent):
            return 1
         return 0
 
-    def getStatesObj(self):
-        return None
+    def getAgentClass(self):
+        return __class__.__name__
 
-    def setStatus(self,statusString):
-        self.finalStatus = statusString
-        if statusString == States.WIN:
-            self.setWin(1)
-        else:
-            self.setWin(0)
+class QAgent(Agent):
+    ##set methods
+    ## evaluate the action should be taken
+    def evalAct(self,state):
+        self.getStatesObj().setState(state)
+        stateIdx = self.getStatesObj().getcurrentStateIndex()
+        qtable = self._states.getQTable()
 
-    def getStatus(self):
-        return self.finalStatus
+        #self.action = self._states._getNextStateVotedValue(state)
+        self.action = qtable[Poker.ALLIN][stateIdx] >= qtable[Poker.FOLD][stateIdx]
+        logger.log(logger.DEBUG,"all in / fold",qtable[Poker.ALLIN][stateIdx],qtable[Poker.FOLD][stateIdx])    
+        if self.enableLearning:      
+            if (np.random.rand() < self._states.getEpsilon()):
+                 self.action = not self.action
+                 logger.log(logger.DEBUG,"Exploring triggered...")
+        
+        #if self._states.hasWaitingHistoryStatus(stateIdx):
+        #    return Poker.FOLD
+        self.action = int(self.action)
+            
+        
+        self.waitingForReward = True
+        return self.action
+
+    ## update as backtracking all states who were piece of this game to winning
+    def backtrackUpdateStates(self):
+        if (self.enableLearning):
+            self.getStatesObj().backtrackUpdateStates()
+
+    def plotSeriesWinsGraph(self):
+        import matplotlib.pyplot as plt
+        accumulatedAxis = list()
+        for counter,item in enumerate(self.seriesWinsGraph):
+            if item == 1:
+                counter += 1
+                accumulatedAxis.append(counter)
+        if accumulatedAxis:
+            plt.plot(range(len(accumulatedAxis)),accumulatedAxis,linewidth=3,markersize=1)
+            plt.xlabel('Wins')
+            plt.ylabel('Epochs')
+            plt.title('QAgent Improvement Curve')
+            plt.grid(True)
+            logger.log(logger.INFO,self.getAgentClass() + " plotting learning process graph..")
+            plt.show()
+
+    def setReward(self,epochs,R):
+        if not self.waitingForReward or not self.enableLearning:
+            return
+        if self.enableLearning:    
+            self.getStatesObj().saveStateHistoryPerRound(self.action,R)
+        ## collect the state to use it in the game test mode
+        if (self.getStatesObj().getcurrentState()[3] == Poker.INSTANCE.getPlayerStartingAmount()):
+            self.getStatesObj().saveCurrentVisitedState()
+        self.waitingForReward = False
+        self.getStatesObj().setStateReward(self.action,R)
+
+    ## checking under percentile parameter if for this state it stays at low percentile, if it does - and he was winning so he was bluff his enemy
+    def updateIfBluff(self):
+        state = self._states.getcurrentState()
+        if self._states.getLastRoundResult() == States.WIN and self.action == Poker.ALLIN:
+            idx = self._states.getLinearIndex(state)
+            qtable = self._states.getQTable()
+            stateRank = self._states.getExpectedAction(state)
+            stateRank = stateRank[1]
+            if stateRank < States.POOR_PERCENTILE*self._states.getTotalPercentile():
+                self.bluffs += 1
+
+    def normalize(self):
+        self._states.normalizeQTable()
+
+    def getActionValue(self):
+        qtable = self._states.getQTable()
+        return qtable[self.action][self._states.getStateIndex()]
+
+    def getTotalPenalties(self):
+        return self.getStatesObj().getSumPenalties()
+
+    def save(self):
+        self._states.saveData(self.id)
+        logger.log(logger.INFO,"Player {} ({}) saved Qtable".format(self.id,self.getAgentClass()))
 
     def getAgentClass(self):
         return __class__.__name__
 
+class States():
+    ## modeling the States of QAgent
+    BACKTRACK_PENALTY = -0.1
+    BACKTRACK_REWARD = 0.1
 
-def main(enableLearning):
-    if enableLearning:
-        logger.log(logger.WARNING,"starting learning process..")
-    else:
-        logger.log(logger.WARNING,"starting testing process..")
+    COLOR_INTERVAL = 2
+    BLIND_INTERVAL = 2
+    CARDS_RANGE = 13
 
-    win_count1 = 0
-    win_count2 = 0
-    epochs = getInput("Epochs ",None,200)
-    Poker.TOTAL_CASH = getInput("Money ",None,10)
-    if Poker.TOTAL_CASH < 0:
-        logger.log(logger.WARNING,"Money cannot be negative.")
-        sys.exit(1)
-    totalRoundCount = 0
+    POOR_PERCENTILE = 0.01
+    WIN = 1
+    LOSE = 0
 
-    game = Poker()
-    agents = [chooseAgent(game,epochs,enableLearning,1,0),chooseAgent(game,epochs,enableLearning,2,1)]
-    for i in range(epochs):
-        logger.log(logger.WARNING,"^^^^^^^^^^^^^^^^^^^^^ game epoch {} ^^^^^^^^^^^^^^^^^^^^^".format(i+1))
-        game.reset()
-        round_count = 1
-        print("----------- round {} -----------".format(round_count))
-        game.deal()
-        while not game.isGameover():
-            if game.isRoundFinished():
-                if enableLearning:
-                    game.deal()
-                else:
-                    game.deal(agents[0].getStatesObj(),agents[1].getStatesObj())
+    def __init__(self,loadtable,agentId):
+        self._qunatizationInterval = 5
+        self._alpha = 0.2
+        self._gamma = 0.1
+        self._currentGamma = self._gamma
+        self._epsilon = 0.1
+        self._agentId = agentId
 
-            playerIdTurn = game.getplayerIDTurn()   
-            state = game.getPlayerState(playerIdTurn)
-            action = agents[playerIdTurn].evalAct(state,enableLearning)
-            game.setAction(action)
-            winners = game.getWinnerIDs()
-
-            if enableLearning:
-                agents[playerIdTurn].collect(state,action)
-
-            if winners:
-                if winners[0] == agents[0].getId():
-                    agents[0].setStatus(States.WIN)
-                    agents[1].setStatus(States.LOSE)
-                elif winners[0] == agents[1].getId():
-                    agents[1].setStatus(States.WIN)
-                    agents[0].setStatus(States.LOSE)
-
-                if enableLearning:
-                    if agents[0].getStatus() == States.WIN:
-                        actionValue = agents[0].getActionValue()
-                        logger.log(logger.WARNING,agents[0].getAgentClass() + " (id:{}) wins: reward/penalty({}) = {}".format(1,agents[0].action2String(agents[0].getAction()),actionValue))
-                    elif agents[1].getAgentClass() == QAgent and agents[1].getStatus() == States.WIN:
-                        actionValue = agents[1].getActionValue()
-                        logger.log(logger.WARNING,agents[0].getAgentClass() + " (id:{}) wins: reward/penalty({}) = {}".format(1,agents[1].action2String(agents[1].getAction()),actionValue))
-                    else:
-                        logger.log(logger.WARNING,agents[1].getAgentClass() + " (id:{}) wins".format(2))
-                else:
-                    logger.log(logger.WARNING,agents[playerIdTurn].getAgentClass() + " (id:{}) wins".format(playerIdTurn+1))
-
-            if game.isRoundFinished() or game.isGameover():
-                if enableLearning:
-                    for idx,agent in enumerate(agents):
-                        weight = -20
-                        if game.isGameover():
-                            if agent.getStatus() == States.WIN:
-                                agent.updateGameWins()
-                                agent.backtrackUpdateStates(True)
-                                weight = 100
-                            else:
-                                agent.updateGameLose()
-                                agent.backtrackUpdateStates(False)
-                            logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) current round wins:".format(idx+1),(agent.getWins() / agent.getEpochs()) * 100.0,"%")
-                            logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) current game wins:".format(idx+1),(agent.getGameWins() / agent.getEpochs()) * 100.0,"%")
-                        else:
-                            weight = -2
-                            if agent.getStatus() == States.WIN:
-                                weight = 10
-                        agent.setReward(weight)
-                        agent.discount(epochs)
-                        agent.updateIfBluff(game.getPlayerState(idx))
-                elif not enableLearning:
-                    for idx,agent in enumerate(agents):
-                        if game.isGameover():
-                            if agent.getStatus() == States.WIN:
-                                agent.updateGameWins()
-                            else:
-                                agent.updateGameLose()
-                            logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) current round wins:".format(idx+1),(agent.getWins() / agent.getEpochs()) * 100.0,"%")
-                            logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) current game wins:".format(idx+1),(agent.getGameWins() / agent.getEpochs()) * 100.0,"%")
-                        agent.updateIfBluff(game.getPlayerState(idx))
-
-            if game.isRoundFinished():
-                round_count += 1
-                totalRoundCount += 1
-                print("----------- round {} -----------".format(round_count))
-
+        self.POT_INTERVAL = self.getQuantizeAmount((2 * Poker.INSTANCE.getPlayerStartingAmount())) + 1
+        self.STATE_STRUCT = (States.CARDS_RANGE,States.CARDS_RANGE,States.COLOR_INTERVAL,self.POT_INTERVAL,States.BLIND_INTERVAL)
+        self._idxListSB = list()
+        self._idxListBB = list()
         
-        game.printStatus()
-    
-    
+        self._qtable,self._qtableVisitedStates,self.totalPercentile = self._init_qtable(loadtable,agentId)
+        self.seedsOrder = 1
+        self._state = -1
+        self._stateIndex = -1
 
-    if enableLearning:
-        logger.log(logger.WARNING,"model learning is finished.")
-        logger.log(logger.WARNING,"")
-        logger.log(logger.WARNING,"Summery Results:")
-        logger.log(logger.WARNING,"----------------")
-        for idx,agent in enumerate(agents):
-            if type(agent) == QAgent:
-                logger.log(logger.WARNING,agent.getAgentClass() + " (id:{}) average penalties:".format(idx+1),(agent.getStatesObj().getSumPenalties() / totalRoundCount))
-            logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) total round wins:".format(idx+1),(agent.getWins() / agent.getEpochs()) * 100.0,"%")
-            logger.log(logger.WARNING,agent.getAgentClass() + " (id:{}) total game wins:".format(idx+1),(agent.getGameWins() / agent.getEpochs()) * 100.0,"%")
+        self._lastRoundResult = None
+        self._R_simple = {States.WIN : 0.1,States.LOSE : -0.05}
+        self._penaltiesSum = 0
+        self._linearStateHistoryPerRound = list()
+
+    # V = (card1,card2,color/not color = {1,0},pot = [0-40],SB/BB = {1,0}) -> A = (allin = rewards,fold = rewards)
+    def _init_qtable(self,loadtable,agentId):
+        self._initNextStates()
+        #start = time.time()
+        #time.clock()
+        table = list()
+        seeds = {}
+        totalPercentile = 0.0
+        if not loadtable:
+            ## creating a flat table to use it as linear and faster functionality
+            table = [np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * self.POT_INTERVAL * States.BLIND_INTERVAL),np.zeros(States.CARDS_RANGE * States.CARDS_RANGE * States.COLOR_INTERVAL * self.POT_INTERVAL * States.BLIND_INTERVAL)]
+        else:
+            logger.log(logger.INFO,"reading QTable..")
+            path = str(os.path.dirname(str(os.path.abspath(__file__))))
+            try:
+                table = np.load(path + "\\Qtable.npy")
+            except:
+                logger.log(logger.CRITICAL,"file " + path + "\\Qtable.npy does not exist! you may want to enable learning first")
+                os.system("PAUSE")
+                sys.exit(0)
+            with open(path + "\\QstateSeeds.npy","rb") as f:
+                seeds = pickle.load(f)
+            try:
+                with open(path + "\\Qcash.npy","rb") as f:
+                    cash = int(pickle.load(f))
+                    if cash != Poker.INSTANCE.getPlayerStartingAmount():
+                        logger.log(logger.CRITICAL,"The qtable does not correspoding to the entered Player Starting Amount amount [" + str(cash) + "]")
+                        sys.exit(1)
+            except:
+                if not os.path.exists(path + "\\Qcash.npy"):
+                    logger.log(logger.CRITICAL,"file " + path + "\\Qcash.npy does not exist! you may want to enable learning first")
+                os.system("PAUSE")
+                sys.exit(0)
+            for key in seeds.keys():
+                totalPercentile += (table[Poker.ALLIN][key] + table[Poker.FOLD][key]) / 2.0
+        #logger.log(logger.DEBUG,"loaded table in",time.time() - start,"seconds")
+        logger.log(logger.DEBUG,"done")
+        return (table,seeds,totalPercentile)
+
+    ##get methods
+    ##computing the expected action against all same hands which is changing their pot amount
+    def getExpectedAction(self,state):
+        
+        avgAllin = 0.0
+        avgFold = 0.0
+        counter = 0
+        for key in self._qtableVisitedStates.keys():
+            alterState = self.getMultiIndex(key)
+            if alterState[0] == state[0] and alterState[1] == state[1] and \
+               alterState[2] == state[2] and alterState[4] == state[4]:
+                counter += 1
+                weigth = 1
+                if alterState[3] == state[3]:
+                    weigth = 2
+                avgAllin += weigth * self._qtable[Poker.ALLIN][key]
+                avgFold += weigth * self._qtable[Poker.FOLD][key]
+        if counter == 0:
+            counter += 1
+
+        return (((avgAllin / counter) >= (avgFold / counter)),(avgAllin + avgFold) / (2 * counter),\
+        ((avgAllin / counter) == (avgFold / counter)) )
+
+    def getcurrentState(self):
+        return self._state
+
+    def getcurrentStateIndex(self):
+        return self._stateIndex
+
+    def getTotalPercentile(self):
+        return self.totalPercentile
+
+    def getLastRoundResult(self):
+        return self._lastRoundResult
+
+    def getQTable(self):
+        return self._qtable
+
+    def getEpsilon(self):
+        return self._epsilon
+
+    def getStateSeeds(self):
+        return self._qtableVisitedStates
+
+
+    def saveStateHistoryPerRound(self,action,R):
+        stateCurrGameStatus = 0
+        if self._lastRoundResult == States.LOSE and action == Poker.ALLIN and Poker.INSTANCE.getPlayerStatus(int(not self._agentId)) == Poker.ALLIN:
+            stateCurrGameStatus = 1
+        self._linearStateHistoryPerRound.append((self._stateIndex,action,self._lastRoundResult,R,stateCurrGameStatus))
+
+    def clearStateHistoryPerRound(self):
+        self._linearStateHistoryPerRound = list()
+
+    def getQuantizeAmount(self,amount):
+        return int(amount / self._qunatizationInterval)
+
+    def getSumPenalties(self):
+        return self._penaltiesSum
+
+    ##set methods
+    def saveCurrentVisitedState(self):
+        if (self._stateIndex not in self._qtableVisitedStates.keys()):
+            self._qtableVisitedStates[self._stateIndex] = 0
+        self._qtableVisitedStates[self._stateIndex] += 1
+
+    def normalizeQTable(self):
+        pass
+
+
+    def backtrackUpdateStates(self):
+        weight = States.BACKTRACK_REWARD if self._linearStateHistoryPerRound[-1][1] == States.WIN else States.BACKTRACK_PENALTY
+
+        for stateOpCur in self._linearStateHistoryPerRound:
+            state = stateOpCur[0]
+            action = stateOpCur[1]
+            # roundResult = stateOpCur[2]
+            # R = stateOpCur[3]
+            self._qtable[action][state] += weight
+        self.clearStateHistoryPerRound()
+
+
+    def setState(self,state):
+        self._state = state
+        self._stateIndex = self.getLinearIndex(state)
+
+    def setLastRoundResult(self,result):
+        self._lastRoundResult = result
+
+    def setStateReward(self,action,R):
+
+        if R < 0:
+            self._penaltiesSum += R
+
+        ## reward/penalty update function
+        self._qtable[action][self._stateIndex] = \
+                                 (1.0 - self._alpha) * self._qtable[action][self._stateIndex] + \
+                                 self._alpha * (R + self._currentGamma * (self._getNextStateExpectedValue(self._state)))
+
+        self._currentGamma -= (self._gamma / SETTINGS.epochs) # discount factor
+
+    ##private methods
+    def _initNextStates(self):
+        for j0 in range(2,States.CARDS_RANGE + 2):
+            for j1 in range(2,States.CARDS_RANGE + 2):
+                for j2 in range(States.COLOR_INTERVAL):
+                    for j3 in range(0,self._qunatizationInterval,self.POT_INTERVAL * self._qunatizationInterval):
+                        self._idxListSB.append(self.getLinearIndex([j0,j1,j2,j3,0]))
+                        self._idxListBB.append(self.getLinearIndex([j0,j1,j2,j3,1]))
+
+   ## computing the expected value for the next state which is SB/BB
+    def _getNextStateExpectedValue(self,state):
+        idxList = self._idxListBB if state[4] == 0 else self._idxListSB
+        return max(sum(self._qtable[Poker.ALLIN][idxList]) / len(idxList),sum(self._qtable[Poker.FOLD][idxList]) / len(idxList))
+
+    ##
+    def _getNextStateVotedValue(self,state):
+        idxList = self._idxListBB if state[4] == Poker.SBTURN else self._idxListSB
+        similarList = list()
+        MAXNN = 3
+        i = 0
+        for idx in idxList:
+            if i == MAXNN:
+                break
+            if self.isSimilar(state,self.getMultiIndex(idx)):
+                similarList.append(self._qtable[Poker.ALLIN][idx] >= self._qtable[Poker.FOLD][idx])
+                i = i + 1
+
+        if not similarList:
+            myIndex = self.getLinearIndex(state)
+            return self._qtable[Poker.ALLIN][myIndex] >=  self._qtable[Poker.FOLD][myIndex]
+  
+
+    
+        dic = Counter(similarList)
+        m = sorted(dic.values())
+
+        #x = {1: 2, 3: 4, 4: 3, 2: 1, 0: 0}
+        m = sorted(dic.items(),reverse = True, key=operator.itemgetter(1))
+
+        if dic[m[0][0]] >= int(MAXNN / 2):
+            return random.randint(0,1)
+
+        return m[0][1]
+
+    def isSimilar(self,state1,state2):
+        return state1[0] == state2[0] and state1[1] == state2[1] and state1[2] == state2[2]
+
+    ##maintenance methods
+    def saveData(self,agentId):
+        path = str(os.path.dirname(str(os.path.abspath(__file__))))
+        np.save(path + "\\Qtable.npy" ,self._qtable, allow_pickle=True, fix_imports=True)
+        with open(path + "\\QstateSeeds.npy","wb") as f:
+            pickle.dump(self._qtableVisitedStates,f,pickle.HIGHEST_PROTOCOL)
+        with open(path + "\\Qcash.npy","wb") as f:
+            pickle.dump(Poker.INSTANCE.getPlayerStartingAmount(),f,pickle.HIGHEST_PROTOCOL)
+
+    def getMultiIndex(self,index):
+        return np.unravel_index(index,self.STATE_STRUCT)
+
+    def getLinearIndex(self,indices):
+        return np.ravel_multi_index([indices[0]-2, indices[1]-2, indices[2],self.getQuantizeAmount(indices[3]),indices[4]],self.STATE_STRUCT)
+
+#######  AGENTS ENDS  ##########
+#-------------------------------------------------------------
+############ MAIN ##############
+
+def SimulateGames():
+    enableLearning = SETTINGS.enableLearning
+    totalRoundCount = 1
+    Poker.INSTANCE = Poker(SETTINGS.chosenStartingAmount)
+    agents = [chooseAgent(SETTINGS.epochs,enableLearning,SETTINGS.loadtable,1,0),chooseAgent(SETTINGS.epochs,enableLearning,SETTINGS.loadtable,2,1)]
+    logger.log(logger.INFO,"Learning is in progess..." if enableLearning else "Testing is in progress...")
+
+    for currentEpochCounter in range(1,SETTINGS.epochs+1):
+        precnt = currentEpochCounter / SETTINGS.epochs * 100.0
+        if (not SETTINGS.printgames and (currentEpochCounter == 1 or precnt.is_integer() and int(precnt) % 5 == 0) ):
+                printProgressBar(currentEpochCounter, SETTINGS.epochs, prefix = 'Progress:', suffix = 'Complete', length = 50)
+
+        logger.log(logger.DEBUG,"\n\n^^^^^^^^^^^^^^^^^^^^^ Epoch {} ^^^^^^^^^^^^^^^^^^^^^".format(currentEpochCounter))
+        Poker.INSTANCE.reset()
+        
+        while not Poker.INSTANCE.isGameover():
+            ####INIT THE ROUND ####
+            if Poker.INSTANCE.isRoundFinished():
+                logger.log(logger.DEBUG,"\n----------- round {} -----------".format(Poker.INSTANCE.getCurrentRoundNumber()))
+
+                if SETTINGS.reducedStates:
+                    Poker.INSTANCE.deal(agents[0].getStatesObj(),agents[1].getStatesObj())
+                else:
+                    Poker.INSTANCE.deal()
+            
+            
+            ####PLAY THE GAME####
+            playerIdTurn = Poker.INSTANCE.getplayerIDTurn()   
+            state = Poker.INSTANCE.getPlayerState(playerIdTurn)
+            action = agents[playerIdTurn].evalAct(state)
+            Poker.INSTANCE.setAction(action)
+
+            ####UPDATE WINNERS####
+            if Poker.INSTANCE.isRoundFinished():
+                winners = Poker.INSTANCE.getWinnerIDs()
+
+                for idx,agent in enumerate(agents):
+                    if (idx in winners):
+                        agent.setLastRoundResult(States.WIN)
+                        logger.log(logger.DEBUG,"Player " + str(idx) + "(" + agent.getAgentClass() + ") wins")
+                    else:
+                        agent.setLastRoundResult(States.LOSE)
+
+                    agent.setReward(SETTINGS.epochs,Poker.INSTANCE.players[idx].getDividends())
+                    #bluff has no bearing while playing against a random opponent
+                    #agent.updateIfBluff()
+                totalRoundCount += 1
+            
+            if Poker.INSTANCE.isGameover():
+                logger.log(logger.DEBUG,"\n<<<GAME OVER>>>>")
+                Poker.INSTANCE.printStatus()
+                for idx,agent in enumerate(agents):
+                    # agent.normalize()
+                    agent.trackAgentGames()
+                    agent.backtrackUpdateStates()
+                    logger.log(logger.DEBUG,"Player {} ({}) total games won: {}%".format(idx,agent.getAgentClass(),agent.getGameWins() / currentEpochCounter * 100.0 ))
+                    logger.log(logger.DEBUG,"Player {} ({}) total rounds won: {}%".format(idx,agent.getAgentClass(),(agent.getRoundWins() / totalRoundCount) * 100.0))
+                
+    
+    ##SUMMARY##  
+    logger.log(logger.INFO,"\n\n\nAI has finished")
+    logger.log(logger.INFO,"Summary results:")
+    logger.log(logger.INFO,"-------------------------------") 
+    
+    for idx,agent in enumerate(agents):
+        logger.log(logger.INFO,"Player {} ({}) games won: {}%".format(idx,agent.getAgentClass(),agent.getGameWins() / SETTINGS.epochs* 100.0))
+        logger.log(logger.INFO,"Player {} ({}) rounds won: {}%".format(idx,agent.getAgentClass(),(agent.getRoundWins() / totalRoundCount) * 100.0))
+        logger.log(logger.INFO,"Player {} ({}) frequency rounds per win: {}".format(idx,agent.getAgentClass(),agent.getWinsFreqPerGame(totalRoundCount)))
+        #agent.plotSeriesWinsGraph()
+        if enableLearning:
+            logger.log(logger.INFO,"Player {} ({}) penalties: {}".format(idx,agent.getAgentClass(),agent.getTotalPenalties()))
             agent.save()
-            agent.plotSeriesWinsGraph(agent.getAgentClass())
-    else:
-        logger.log(logger.WARNING,"mini AI poker game is finished.")
-        logger.log(logger.WARNING,"")
-        logger.log(logger.WARNING,"Summery Results:")
-        logger.log(logger.WARNING,"----------------")
-        for idx,agent in enumerate(agents):
-            logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) total round wins:".format(idx+1),(agent.getWins() / agent.getEpochs()) * 100.0,"%")
-            logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) total game wins:".format(idx+1),(agent.getGameWins() / agent.getEpochs()) * 100.0,"%")
-            if type(agent) == QAgent:
-                logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) average bluffs:".format(idx+1),(agent.getBluffs() / totalRoundCount))
-                logger.log(logger.WARNING,agent.getAgentClass() + "(id:{}) average game wins:".format(idx+1),agent.getAvgWinsPerGame())
+        else:
+            logger.log(logger.INFO,"Player {} ({}) avg bluffs: {}%".format(idx,agent.getAgentClass(),(agent.getBluffs() / totalRoundCount)))
 
+########## PRE SETUP ###########
+class SETTINGS:
+    enableLearning = True
+    loadtable = False
+    epochs = 200
+    chosenStartingAmount = 10
+    printgames = True
+    reducedStates = False
+    chosenPreset = -1
+logger.setPrintThreshold(logger.DEBUG if SETTINGS.printgames else logger.INFO)
+
+def setPreset(presetID):
+    SETTINGS.chosenPreset = presetID
+    if (presetID == 0):
+        SETTINGS.enableLearning = True
+        SETTINGS.loadtable = False
+        SETTINGS.epochs = 1000
+        SETTINGS.chosenStartingAmount = 10
+        SETTINGS.printgames = False
+        SETTINGS.reducedStates = False
+    elif (presetID == 1):
+        SETTINGS.enableLearning = True
+        SETTINGS.loadtable = True
+        SETTINGS.epochs = 2500
+        SETTINGS.chosenStartingAmount = 10
+        SETTINGS.printgames = False
+        SETTINGS.reducedStates = True
+    elif (presetID == 2):
+        SETTINGS.enableLearning = False
+        SETTINGS.loadtable = True
+        SETTINGS.epochs = 1000
+        SETTINGS.chosenStartingAmount = 10
+        SETTINGS.printgames = False
+        SETTINGS.reducedStates = True
+    elif (presetID == 3):
+        SETTINGS.enableLearning = False
+        SETTINGS.loadtable = True
+        SETTINGS.epochs = 50
+        SETTINGS.chosenStartingAmount = 10
+        SETTINGS.printgames = True
+        SETTINGS.reducedStates = True
+    logger.setPrintThreshold(logger.DEBUG if SETTINGS.printgames else logger.INFO)
+
+def main():
+    while (True):
+        logger.log(logger.INFO, \
+    """
+     __  __ _       _   _____      _                        _____ 
+    |  \/  (_)     (_) |  __ \    | |                 /\   |_   _|
+    | \  / |_ _ __  _  | |__) |__ | | _____ _ __     /  \    | |  
+    | |\/| | | '_ \| | |  ___/ _ \| |/ / _ \ '__|   / /\ \   | |  
+    | |  | | | | | | | | |  | (_) |   <  __/ |     / ____ \ _| |_ 
+    |_|  |_|_|_| |_|_| |_|   \___/|_|\_\___|_|    /_/    \_\_____|
+    """)
+
+        logger.log(logger.INFO, \
+"""
+=========
+Main Menu
+=========
+Settings:
+0. Enable Learning: {}          [Create or updates the Qtable for the visited stated]
+1. Load saved Table: {}         [Load the previous saved Qtable data]
+2. Epochs: {}                   [Number of games to be simulated]
+3. Starting Amount: {}          [The amount of chips the players will start with]
+4. Print Games: {}              [Print the games results during execution or displays a progress bar]
+5. Reduce States: {}            [Give the players cards that were played when Qtable was generated]
+
+6. Choose Presets [{}]: (0-Initial Learning,1-Extended Learning,2-High Volume Testing,3-Displayed Testing)
+
+Actions:
+7. Start AI
+8. Clear Screen
+9. Exit
+""".format(SETTINGS.enableLearning,SETTINGS.loadtable,SETTINGS.epochs ,SETTINGS.chosenStartingAmount,SETTINGS.printgames,SETTINGS.reducedStates,SETTINGS.chosenPreset))
+        option = getInput("Command",None,None)
+        if (option == 0):
+            SETTINGS.enableLearning =  not SETTINGS.enableLearning
+        elif (option == 1):
+            SETTINGS.loadtable =  not SETTINGS.loadtable
+        elif (option == 2):
+            SETTINGS.epochs =   getInput("Epochs (default 200)",None,200)
+        elif (option == 3):
+            SETTINGS.chosenStartingAmount =  getInput("Money (default 10)",None,10)
+        elif (option == 4):
+            SETTINGS.printgames =  not SETTINGS.printgames
+            logger.setPrintThreshold(logger.DEBUG if SETTINGS.printgames else logger.INFO)
+        elif (option == 5):
+            SETTINGS.reducedStates =  not SETTINGS.reducedStates
+        elif (option == 6):
+            setPreset(getInput("Choose preset",['Initial Learning','Extended Learning','High Volume Testing','Displayed Testing'],None))
+        elif (option == 7):
+            if (SETTINGS.enableLearning and not SETTINGS.loadtable):
+                 answer =  getInput("WARNING Qtable will be overwritten. Continue?",['NO','YES'])
+                 if (answer == 1):
+                    SimulateGames()
+                 else:
+                    os.system("CLS")
+            else:
+                SimulateGames()
+        elif (option == 8):
+            os.system("CLS")
+        elif (option == 9):
+            sys.exit(0)
+        else:
+            logger.log(logger.WARNING, "Invalid option!")
+
+        if (option != 7):
+            os.system("CLS")
 
 if __name__ == '__main__':
-    enableLearning = getInput("Enable learning",['NO','YES'])
-    main(enableLearning)
+        main()

@@ -631,7 +631,7 @@ class Agent:
         pass
     
     def getTotalPenalties(self):
-        return None
+        return 0
 
     def setLastRoundResult(self,result):
         self.getStatesObj().setLastRoundResult(result)
@@ -712,15 +712,10 @@ class QAgent(Agent):
 
     def plotSeriesWinsGraph(self):
         import matplotlib.pyplot as plt
-        accumulatedAxis = list()
-        for counter,item in enumerate(self.seriesWinsGraph):
-            if item == 1:
-                counter += 1
-                accumulatedAxis.append(counter)
-        if accumulatedAxis:
-            plt.plot(range(len(accumulatedAxis)),accumulatedAxis,linewidth=3,markersize=1)
-            plt.xlabel('Wins')
-            plt.ylabel('Epochs')
+        if self.seriesWinsGraph:
+            plt.plot(range(len(self.seriesWinsGraph)),self.seriesWinsGraph,linewidth=3,markersize=1)
+            plt.xlabel('Epochs')
+            plt.ylabel('Wins')
             plt.title('QAgent Improvement Curve')
             plt.grid(True)
             logger.log(logger.INFO,self.getAgentClass() + " plotting learning process graph..")
@@ -743,9 +738,8 @@ class QAgent(Agent):
         if self._states.getLastRoundResult() == States.WIN and self.action == Poker.ALLIN:
             idx = self._states.getLinearIndex(state)
             qtable = self._states.getQTable()
-            stateRank = self._states.getExpectedAction(state)
-            stateRank = stateRank[1]
-            if stateRank < States.POOR_PERCENTILE*self._states.getTotalPercentile():
+            se = (qtable[Poker.ALLIN][idx] - qtable[Poker.FOLD][idx])**2
+            if se < States.BLUFF_UNDERBOUND:
                 self.bluffs += 1
 
     def normalize(self):
@@ -767,21 +761,21 @@ class QAgent(Agent):
 
 class States():
     ## modeling the States of QAgent
-    BACKTRACK_PENALTY = -0.1
-    BACKTRACK_REWARD = 0.1
+    BACKTRACK_PENALTY = -0.01
+    BACKTRACK_REWARD = 0.01
 
     COLOR_INTERVAL = 2
     BLIND_INTERVAL = 2
     CARDS_RANGE = 13
 
-    POOR_PERCENTILE = 0.01
+    BLUFF_UNDERBOUND = 0.001
     WIN = 1
     LOSE = 0
 
     def __init__(self,loadtable,agentId):
         self._qunatizationInterval = 5
         self._alpha = 0.2
-        self._gamma = 0.1
+        self._gamma = 0.2
         self._currentGamma = self._gamma
         self._epsilon = 0.1
         self._agentId = agentId
@@ -797,7 +791,7 @@ class States():
         self._stateIndex = -1
 
         self._lastRoundResult = None
-        self._R_simple = {States.WIN : 0.1,States.LOSE : -0.05}
+        self._R_simple = {States.WIN : 0.1,States.LOSE : -0.1}
         self._penaltiesSum = 0
         self._linearStateHistoryPerRound = list()
 
@@ -835,33 +829,29 @@ class States():
                 os.system("PAUSE")
                 sys.exit(0)
             for key in seeds.keys():
-                totalPercentile += (table[Poker.ALLIN][key] + table[Poker.FOLD][key]) / 2.0
+                totalPercentile += (float(table[Poker.ALLIN][key]) + float(table[Poker.FOLD][key])) / 2.0
         #logger.log(logger.DEBUG,"loaded table in",time.time() - start,"seconds")
         logger.log(logger.DEBUG,"done")
         return (table,seeds,totalPercentile)
 
     ##get methods
-    ##computing the expected action against all same hands which is changing their pot amount
-    def getExpectedAction(self,state):
-        
-        avgAllin = 0.0
-        avgFold = 0.0
-        counter = 0
+    ## method to simulate next optional min cash loss against another random state
+    ## make the loss of total reward be bigger or lower depend on its value as position correlation to the reward aim
+    ## game success rate and the round success rate are closer and being almost the same rate
+    ## cards reward more reasonable and no fold/allin cards changing
+    def _getMaxCashLoss(self):
+        simulationList = list()
+        myState = self.getMultiIndex(self._stateIndex)
         for key in self._qtableVisitedStates.keys():
             alterState = self.getMultiIndex(key)
-            if alterState[0] == state[0] and alterState[1] == state[1] and \
-               alterState[2] == state[2] and alterState[4] == state[4]:
-                counter += 1
-                weigth = 1
-                if alterState[3] == state[3]:
-                    weigth = 2
-                avgAllin += weigth * self._qtable[Poker.ALLIN][key]
-                avgFold += weigth * self._qtable[Poker.FOLD][key]
-        if counter == 0:
-            counter += 1
+            simulationList.append((alterState[3] - myState[3])**2)
+        if not simulationList:
+            return 1.0
+        ret = np.log2(max(simulationList) + 1)
+        if abs(ret) == np.Inf:
+            raise ""
+        return ret
 
-        return (((avgAllin / counter) >= (avgFold / counter)),(avgAllin + avgFold) / (2 * counter),\
-        ((avgAllin / counter) == (avgFold / counter)) )
 
     def getcurrentState(self):
         return self._state
@@ -937,7 +927,7 @@ class States():
         ## reward/penalty update function
         self._qtable[action][self._stateIndex] = \
                                  (1.0 - self._alpha) * self._qtable[action][self._stateIndex] + \
-                                 self._alpha * (R + self._currentGamma * (self._getNextStateExpectedValue(self._state)))
+                                 self._alpha * (R + self._currentGamma * (self._getMaxCashLoss()))
 
         self._currentGamma -= (self._gamma / SETTINGS.epochs) # discount factor
 
@@ -1052,7 +1042,7 @@ def SimulateGames():
 
                     agent.setReward(SETTINGS.epochs,Poker.INSTANCE.players[idx].getDividends())
                     #bluff has no bearing while playing against a random opponent
-                    #agent.updateIfBluff()
+                    agent.updateIfBluff()
                 totalRoundCount += 1
             
             if Poker.INSTANCE.isGameover():
@@ -1075,9 +1065,9 @@ def SimulateGames():
         logger.log(logger.INFO,"Player {} ({}) games won: {}%".format(idx,agent.getAgentClass(),agent.getGameWins() / SETTINGS.epochs* 100.0))
         logger.log(logger.INFO,"Player {} ({}) rounds won: {}%".format(idx,agent.getAgentClass(),(agent.getRoundWins() / totalRoundCount) * 100.0))
         logger.log(logger.INFO,"Player {} ({}) frequency rounds per win: {}".format(idx,agent.getAgentClass(),agent.getWinsFreqPerGame(totalRoundCount)))
-        #agent.plotSeriesWinsGraph()
+        agent.plotSeriesWinsGraph()
         if enableLearning:
-            logger.log(logger.INFO,"Player {} ({}) penalties: {}".format(idx,agent.getAgentClass(),agent.getTotalPenalties()))
+            logger.log(logger.INFO,"Player {} ({}) penalties: {}".format(idx,agent.getAgentClass(),agent.getTotalPenalties() / totalRoundCount))
             agent.save()
         else:
             logger.log(logger.INFO,"Player {} ({}) avg bluffs: {}%".format(idx,agent.getAgentClass(),(agent.getBluffs() / totalRoundCount)))
@@ -1086,11 +1076,11 @@ def SimulateGames():
 class SETTINGS:
     enableLearning = True
     loadtable = False
-    epochs = 200
+    epochs = 1000
     chosenStartingAmount = 10
-    printgames = True
+    printgames = False
     reducedStates = False
-    chosenPreset = -1
+    chosenPreset = 0
 logger.setPrintThreshold(logger.DEBUG if SETTINGS.printgames else logger.INFO)
 
 def setPreset(presetID):

@@ -713,7 +713,7 @@ class QAgent(Agent):
     def plotSeriesWinsGraph(self):
         import matplotlib.pyplot as plt
         if self.seriesWinsGraph:
-            plt.plot(range(len(self.seriesWinsGraph)),self.seriesWinsGraph,linewidth=3,markersize=1)
+            plt.plot(range(len(self.seriesWinsGraph)),self.seriesWinsGraph,linewidth=1,markersize=1)
             plt.xlabel('Epochs')
             plt.ylabel('Wins')
             plt.title('QAgent Improvement Curve')
@@ -1065,12 +1065,12 @@ def SimulateGames():
         logger.log(logger.INFO,"Player {} ({}) games won: {}%".format(idx,agent.getAgentClass(),agent.getGameWins() / SETTINGS.epochs* 100.0))
         logger.log(logger.INFO,"Player {} ({}) rounds won: {}%".format(idx,agent.getAgentClass(),(agent.getRoundWins() / totalRoundCount) * 100.0))
         logger.log(logger.INFO,"Player {} ({}) frequency rounds per win: {}".format(idx,agent.getAgentClass(),agent.getWinsFreqPerGame(totalRoundCount)))
-        agent.plotSeriesWinsGraph()
         if enableLearning:
-            logger.log(logger.INFO,"Player {} ({}) penalties: {}".format(idx,agent.getAgentClass(),agent.getTotalPenalties() / totalRoundCount))
+            logger.log(logger.INFO,"Player {} ({}) average penalties: {}".format(idx,agent.getAgentClass(),agent.getTotalPenalties() / totalRoundCount))
             agent.save()
+            agent.plotSeriesWinsGraph()
         else:
-            logger.log(logger.INFO,"Player {} ({}) avg bluffs: {}%".format(idx,agent.getAgentClass(),(agent.getBluffs() / totalRoundCount)))
+            logger.log(logger.INFO,"Player {} ({}) bluffs: {}%".format(idx,agent.getAgentClass(),((agent.getBluffs() / totalRoundCount) * 100.0)))
 
 ########## PRE SETUP ###########
 class SETTINGS:
